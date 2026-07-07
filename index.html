@@ -1494,14 +1494,21 @@ function jsonOutput(obj) {
         }
         step = "parsing baris pesanan (parseRawOrders)";
         const grouped = parseRawOrders(wb, detection);
+        step = "hitung bulan hasil parsing";
         const bulanList = grouped ? Object.keys(grouped) : [];
         if(!bulanList.length){
           showToast("Nggak ada baris valid kebaca dari file mentah ini. Cek lagi apakah kolom/formatnya masih standar bawaan platform.", true);
           return;
         }
+        step = "set dropdown platform";
         document.getElementById("orders-platform-select").value = detection.platform;
         let totalRows = 0;
-        bulanList.forEach(bulan => { stageOrders(detection.platform, bulan, grouped[bulan]); totalRows += grouped[bulan].length; });
+        for(const bulan of bulanList){
+          step = `stageOrders untuk bulan ${bulan}`;
+          stageOrders(detection.platform, bulan, grouped[bulan]);
+          totalRows += grouped[bulan].length;
+        }
+        step = "tampilkan notifikasi sukses";
         showToast(`${PLATFORM_LABEL[detection.platform]}: ${totalRows} baris pesanan (${bulanList.join(", ")}) otomatis kebaca dari file mentah ✓ Klik "Simpan Pesanan ke Spreadsheet" kalau sudah yakin.`);
       }catch(err){
         showToast(`Gagal baca file xlsx saat tahap "${step}": ${err.message}`, true);
@@ -1702,7 +1709,7 @@ function jsonOutput(obj) {
 
   function renderChips(){
     const wrap = document.getElementById("month-chips");
-    const present = monthsPresent();
+    const present = MONTH_ORDER.filter(m => monthsData[m] && monthsData[m].length);
     wrap.innerHTML = present.map(m => {
       const dirty = dirtyMonths.has(m);
       return `
@@ -2204,22 +2211,40 @@ function jsonOutput(obj) {
   }
 
   function renderAll(){
-    renderChips();
-    renderOrdersChips();
-    renderIncomeChips();
-    renderMappingTables();
+    const steps = [
+      ["renderChips", renderChips],
+      ["renderOrdersChips", renderOrdersChips],
+      ["renderIncomeChips", renderIncomeChips],
+      ["renderMappingTables", renderMappingTables]
+    ];
+    for(const [name, fn] of steps){
+      try{ fn(); }
+      catch(err){ throw new Error(`renderAll gagal di ${name}: ${err.message}`); }
+    }
+
     const present = monthsPresent();
     const hasData = present.length > 0;
     document.getElementById("empty-state").style.display = hasData ? "none" : "block";
     document.getElementById("dashboard-body").style.display = hasData ? "block" : "none";
     if(!hasData) return;
 
-    const productMap = buildProductMap();
-    renderKPI(productMap, present);
-    renderTop10();
-    renderFullTable(productMap, present);
+    let productMap;
+    try{ productMap = buildProductMap(); }
+    catch(err){ throw new Error(`renderAll gagal di buildProductMap: ${err.message}`); }
+
+    try{ renderKPI(productMap, present); }
+    catch(err){ throw new Error(`renderAll gagal di renderKPI: ${err.message}`); }
+
+    try{ renderTop10(); }
+    catch(err){ throw new Error(`renderAll gagal di renderTop10: ${err.message}`); }
+
+    try{ renderFullTable(productMap, present); }
+    catch(err){ throw new Error(`renderAll gagal di renderFullTable: ${err.message}`); }
+
     if(selectedProduct && !productMap[selectedProduct]) selectedProduct = null;
-    renderExplorer();
+
+    try{ renderExplorer(); }
+    catch(err){ throw new Error(`renderAll gagal di renderExplorer: ${err.message}`); }
   }
 
   /* ================= EVENTS ================= */
