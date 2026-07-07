@@ -1334,6 +1334,7 @@ function jsonOutput(obj) {
     if(findCI("orderskulist")) return {platform:"TIKTOK", kind:"orders", sheetName: findCI("orderskulist")};
     if(names.includes("Income")) return {platform:"SHOPEE", kind:"income", sheetName:"Income"};
     if(findCI("detail pesanan")) return {platform:"TIKTOK", kind:"income", sheetName: findCI("detail pesanan")};
+    if(findCI("order details")) return {platform:"TIKTOK", kind:"income", sheetName: findCI("order details")};
     return null;
   }
   function safeSheetRows(wb, sheetName){
@@ -1454,6 +1455,14 @@ function jsonOutput(obj) {
     }
     return null;
   }
+  function findHeaderRowIndexFlexible(rows, candidateSets){
+    for(const set of candidateSets){
+      const idx = findHeaderRowIndex(rows, set);
+      if(idx>=0) return idx;
+    }
+    return -1;
+  }
+
   function parseRawIncome(wb, detection){
     const rows = safeSheetRows(wb, detection.sheetName);
     if(detection.platform === "SHOPEE"){
@@ -1465,11 +1474,14 @@ function jsonOutput(obj) {
       })).filter(r=>r.noPesanan);
     }
     if(detection.platform === "TIKTOK"){
-      const headerIdx = findHeaderRowIndex(rows, ["ID Pesanan/Penyesuaian","Jumlah penyelesaian pembayaran"]);
+      const headerIdx = findHeaderRowIndexFlexible(rows, [
+        ["ID Pesanan/Penyesuaian","Jumlah penyelesaian pembayaran"],
+        ["Order/adjustment ID","Total settlement amount"]
+      ]);
       if(headerIdx<0) return null;
       return rowsToObjects(rows, headerIdx).filter(Boolean).map(o=>({
-        noPesanan: (o["ID Pesanan/Penyesuaian"]||"").toString().trim(),
-        totalPenghasilan: parseIndoMoney(o["Jumlah penyelesaian pembayaran"])
+        noPesanan: (pickField(o, ["ID Pesanan/Penyesuaian","Order/adjustment ID"])||"").toString().trim(),
+        totalPenghasilan: parseIndoMoney(pickField(o, ["Jumlah penyelesaian pembayaran","Total settlement amount"]))
       })).filter(r=>r.noPesanan);
     }
     return null;
