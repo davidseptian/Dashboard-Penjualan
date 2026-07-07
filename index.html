@@ -1266,6 +1266,26 @@ function jsonOutput(obj) {
     const n = parseFloat(s);
     return isNaN(n) ? 0 : n;
   }
+  // Khusus kolom uang: Shopee kadang export angka yang ke-scale 1/1000 akibat bug locale
+  // (mis. rupiah asli 32790 malah kebaca 32.79 karena "." dianggap desimal, bukan ribuan).
+  // Karena rupiah tidak pernah ada pecahan, angka non-integer dari sumber numerik asli
+  // hampir pasti kena bug ini — dikoreksi dengan dikali 1000.
+  function parseIndoMoney(x){
+    if(x===null || x===undefined || x==="") return 0;
+    if(typeof x === "number"){
+      if(!Number.isInteger(x)) return Math.round(x*1000);
+      return x;
+    }
+    const s = x.toString().trim().replace(/\./g,"").replace(/,/g,".");
+    const n = parseFloat(s);
+    return isNaN(n) ? 0 : n;
+  }
+  function pickField(o, candidates){
+    for(const c of candidates){
+      if(o[c] !== undefined && o[c] !== null && o[c] !== "") return o[c];
+    }
+    return null;
+  }
   function excelDateToMonth(v){
     let d = null;
     if(v instanceof Date){
@@ -1286,6 +1306,7 @@ function jsonOutput(obj) {
     return MONTH_ORDER[d.getMonth()];
   }
   function findHeaderRowIndex(rows, requiredHeaders){
+    if(!rows || !rows.length) return -1;
     for(let i=0;i<Math.min(rows.length,20);i++){
       const row = (rows[i]||[]).map(c => (c===null||c===undefined?"":c.toString().trim()));
       if(requiredHeaders.every(h => row.includes(h))) return i;
@@ -1293,11 +1314,12 @@ function jsonOutput(obj) {
     return -1;
   }
   function rowsToObjects(rows, headerIdx){
+    if(!rows || !rows.length || headerIdx<0 || !rows[headerIdx]) return [];
     const headers = (rows[headerIdx]||[]).map(c => (c===null||c===undefined?"":c.toString().trim()));
     const out = [];
     for(let i=headerIdx+1;i<rows.length;i++){
       const r = rows[i];
-      if(!r || r.every(c=>c===null||c===undefined||c==="")) continue;
+      if(!r || !Array.isArray(r) || r.every(c=>c===null||c===undefined||c==="")) continue;
       const obj = {};
       headers.forEach((h,idx)=>{ if(h) obj[h]=r[idx]; });
       out.push(obj);
@@ -1305,22 +1327,29 @@ function jsonOutput(obj) {
     return out;
   }
   function detectRawWorkbook(wb){
+    if(!wb || !wb.SheetNames || !wb.SheetNames.length) return null;
     const names = wb.SheetNames;
-    const findCI = (n) => names.find(x => x.toLowerCase()===n);
+    const findCI = (n) => names.find(x => (x||"").toLowerCase()===n);
     if(findCI("orders")) return {platform:"SHOPEE", kind:"orders", sheetName: findCI("orders")};
     if(findCI("orderskulist")) return {platform:"TIKTOK", kind:"orders", sheetName: findCI("orderskulist")};
     if(names.includes("Income")) return {platform:"SHOPEE", kind:"income", sheetName:"Income"};
     if(findCI("detail pesanan")) return {platform:"TIKTOK", kind:"income", sheetName: findCI("detail pesanan")};
     return null;
   }
+  function safeSheetRows(wb, sheetName){
+    const ws = wb && wb.Sheets ? wb.Sheets[sheetName] : null;
+    if(!ws) throw new Error(`Sheet "${sheetName}" tidak ditemukan di file ini`);
+    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null}) || [];
+    return rows;
+  }
   function parseRawOrders(wb, detection){
-    const ws = wb.Sheets[detection.sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    const rows = safeSheetRows(wb, detection.sheetName);
     const grouped = {};
     if(detection.platform === "SHOPEE"){
-      const headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Status Pesanan","Nama Produk","SKU Induk","Jumlah","Subtotal Pesanan"]);
+      const headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Status Pesanan","Nama Produk","SKU Induk","Jumlah"]);
       if(headerIdx<0) return null;
       rowsToObjects(rows, headerIdx).forEach(o=>{
+        if(!o) return;
         if((o["Status Pesanan"]||"").toString().trim()==="Batal") return;
         const bulan = excelDateToMonth(o["Waktu Pesanan Dibuat"]) || excelDateToMonth(o["Waktu Pembayaran Dilakukan"]);
         const noPesanan = (o["No. Pesanan"]||"").toString().trim();
@@ -1328,7 +1357,7 @@ function jsonOutput(obj) {
         if(!bulan || !noPesanan || !produk) return;
         const sku = (o["SKU Induk"]||"").toString().trim();
         const qty = parseIndoNumber(o["Jumlah"]);
-        const subtotalKotor = parseIndoNumber(o["Subtotal Pesanan"]);
+        const subtotalKotor = parseIndoMoney(pickField(o, ["Subtotal Pesanan","Total Harga Produk"]));
         if(!grouped[bulan]) grouped[bulan]=[];
         grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
       });
@@ -1338,6 +1367,7 @@ function jsonOutput(obj) {
       const headerIdx = findHeaderRowIndex(rows, ["Order ID","Order Status","Product Name","Seller SKU","Quantity","SKU Subtotal After Discount"]);
       if(headerIdx<0) return null;
       rowsToObjects(rows, headerIdx).forEach(o=>{
+        if(!o) return;
         if((o["Order Status"]||"").toString().trim()==="Dibatalkan") return;
         const bulan = excelDateToMonth(o["Created Time"]);
         const noPesanan = (o["Order ID"]||"").toString().trim();
@@ -1345,7 +1375,7 @@ function jsonOutput(obj) {
         if(!bulan || !noPesanan || !produk) return;
         const sku = (o["Seller SKU"]||"").toString().trim();
         const qty = parseIndoNumber(o["Quantity"]);
-        const subtotalKotor = parseIndoNumber(o["SKU Subtotal After Discount"]);
+        const subtotalKotor = parseIndoMoney(o["SKU Subtotal After Discount"]);
         if(!grouped[bulan]) grouped[bulan]=[];
         grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
       });
@@ -1354,22 +1384,21 @@ function jsonOutput(obj) {
     return null;
   }
   function parseRawIncome(wb, detection){
-    const ws = wb.Sheets[detection.sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    const rows = safeSheetRows(wb, detection.sheetName);
     if(detection.platform === "SHOPEE"){
       const headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Total Penghasilan"]);
       if(headerIdx<0) return null;
-      return rowsToObjects(rows, headerIdx).map(o=>({
+      return rowsToObjects(rows, headerIdx).filter(Boolean).map(o=>({
         noPesanan: (o["No. Pesanan"]||"").toString().trim(),
-        totalPenghasilan: parseIndoNumber(o["Total Penghasilan"])
+        totalPenghasilan: parseIndoMoney(o["Total Penghasilan"])
       })).filter(r=>r.noPesanan);
     }
     if(detection.platform === "TIKTOK"){
       const headerIdx = findHeaderRowIndex(rows, ["ID Pesanan/Penyesuaian","Jumlah penyelesaian pembayaran"]);
       if(headerIdx<0) return null;
-      return rowsToObjects(rows, headerIdx).map(o=>({
+      return rowsToObjects(rows, headerIdx).filter(Boolean).map(o=>({
         noPesanan: (o["ID Pesanan/Penyesuaian"]||"").toString().trim(),
-        totalPenghasilan: parseIndoNumber(o["Jumlah penyelesaian pembayaran"])
+        totalPenghasilan: parseIndoMoney(o["Jumlah penyelesaian pembayaran"])
       })).filter(r=>r.noPesanan);
     }
     return null;
