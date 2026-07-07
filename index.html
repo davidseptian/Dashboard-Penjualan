@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root{
@@ -166,7 +167,7 @@
 
   /* ---------- KPI cards ---------- */
   .kpi-grid{
-    display:grid; grid-template-columns:repeat(4, 1fr); gap:16px;
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px;
   }
   .kpi{
     background:var(--bg-card); border:1px solid var(--border-soft); border-radius:var(--radius);
@@ -332,13 +333,49 @@
   .toast.err{border-left-color:var(--red);}
   @keyframes slidein{from{transform:translateY(10px); opacity:0;} to{transform:translateY(0); opacity:1;}}
 
+  /* ---------- ledger upload (pesanan/income/mapping) ---------- */
+  .field-row{display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:16px;}
+  .field-row label{font-size:12.5px; color:var(--text-dim); font-weight:600; display:flex; flex-direction:column; gap:6px;}
+  .field-row select{
+    background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);
+    border-radius:9px; padding:9px 14px; font-family:var(--font-display); font-weight:600; font-size:13px; cursor:pointer;
+  }
+  .dropzone.small{padding:20px;}
+  .platform-chip{
+    display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700;
+    padding:3px 9px; border-radius:999px; text-transform:uppercase; letter-spacing:.03em;
+  }
+  .platform-chip.shopee{background:rgba(238,77,45,0.14); color:#ff7a52;}
+  .platform-chip.tiktok{background:rgba(255,255,255,0.08); color:#e2e2e6;}
+  .platform-chip.tokopedia{background:rgba(66,133,244,0.14); color:#6ea8ff;}
+
+  .mapping-table{width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;}
+  .mapping-table th{
+    text-align:left; color:var(--text-dim); font-weight:600; font-size:11px; text-transform:uppercase;
+    letter-spacing:.05em; padding:8px; border-bottom:1px solid var(--border-soft);
+  }
+  .mapping-table td{padding:9px 8px; border-bottom:1px solid var(--border-soft); vertical-align:middle;}
+  .mapping-table input[type=text]{
+    width:100%; background:var(--bg-elevated); border:1px solid var(--border); color:var(--text);
+    padding:8px 10px; border-radius:7px; font-family:var(--font-display); font-size:13px;
+  }
+  .mapping-table input[type=text]:focus{outline:none; border-color:var(--gold);}
+  .mapping-empty{color:var(--text-dim); font-size:13px; padding:16px 4px;}
+  .btn-small{
+    font-family:var(--font-display); font-size:12px; font-weight:700; border:none; border-radius:7px;
+    padding:7px 12px; cursor:pointer; white-space:nowrap;
+  }
+  .btn-small.save{background:var(--gold); color:#161608;}
+  .btn-small.save:hover{background:var(--gold-bright);}
+  .btn-small.remove{background:transparent; color:var(--text-dim); border:1px solid var(--border);}
+  .btn-small.remove:hover{color:var(--red); border-color:var(--red);}
+
   footer{
     text-align:center; padding:34px 6vw 50px; color:var(--text-dim); font-size:12px;
     border-top:1px solid var(--border-soft);
   }
 
   @media (max-width: 900px){
-    .kpi-grid{grid-template-columns:repeat(2,1fr);}
     .two-col{grid-template-columns:1fr;}
   }
   @media (max-width: 560px){
@@ -381,6 +418,7 @@
       </div>
       <details class="guide">
         <summary>Belum punya spreadsheet-nya? Klik di sini untuk cara setup (sekali saja)</summary>
+        <p style="font-size:12.5px; color:var(--gold-bright); margin:2px 0 12px;">⚠️ Kalau kamu sudah pernah setup versi sebelumnya: cukup <b>ganti kode Apps Script-nya</b> dengan yang baru di bawah (Deploy → Manage deployments → Edit → New version), spreadsheet & data lama kamu tidak akan hilang — cuma nambah 3 sheet baru (Orders, Income, Mapping).</p>
         <ol>
           <li>Buka <code>sheets.google.com</code> → buat spreadsheet baru (boleh kosong, boleh dikasih nama "Database Dashboard Hypospot").</li>
           <li>Di menu atas klik <code>Extensions → Apps Script</code>.</li>
@@ -394,81 +432,208 @@
         <div class="code-wrap">
           <button class="copy-btn" id="btn-copy-code">Salin Kode</button>
           <textarea id="gs-code" readonly spellcheck="false">/**
- * HYPOSPOT — Dashboard Penjualan
- * Backend Apps Script: menyimpan data upload CSV ke Google Sheet ini
- * sebagai database sungguhan (bukan cuma localStorage browser).
+ * HYPOSPOT — Dashboard Penjualan (v2: Pesanan + Income + Mapping)
+ * Backend Apps Script: menyimpan data ke Google Sheet ini sebagai database sungguhan.
  */
 
-const SHEET_NAME = "RawData";
-const HEADERS = ["Bulan", "Nama Produk", "Qty", "Revenue", "Waktu Upload"];
+const SHEET_LEGACY = "RawData";
+const HEADERS_LEGACY = ["Bulan", "Nama Produk", "Qty", "Revenue", "Waktu Upload"];
 
-function getSheet() {
+const SHEET_ORDERS = "Orders";
+const HEADERS_ORDERS = ["Platform", "Bulan", "No. Pesanan", "Nama Produk", "Qty", "Subtotal Kotor", "Waktu Upload", "SKU"];
+
+const SHEET_INCOME = "Income";
+const HEADERS_INCOME = ["Platform", "No. Pesanan", "Total Penghasilan", "Waktu Upload"];
+
+const SHEET_MAPPING = "Mapping";
+const HEADERS_MAPPING = ["Platform", "Nama Produk Asli", "Nama Produk Master"];
+
+const SHEET_SKUMAP = "SkuMap";
+const HEADERS_SKUMAP = ["Kode Produk", "Nama Produk Master"];
+
+function getOrCreateSheet(name, headers) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(SHEET_NAME);
+  let sheet = ss.getSheetByName(name);
   if (!sheet) {
-    sheet = ss.insertSheet(SHEET_NAME);
-    sheet.appendRow(HEADERS);
+    sheet = ss.insertSheet(name);
+    sheet.appendRow(headers);
     sheet.setFrozenRows(1);
   }
   return sheet;
 }
 
-function doGet(e) {
-  const sheet = getSheet();
+function replaceRowsWhere(sheet, matchFn, newRows) {
   const values = sheet.getDataRange().getValues();
-  const data = {};
+  const keep = [values[0]];
   for (let i = 1; i < values.length; i++) {
-    const bulan = values[i][0];
-    const produk = values[i][1];
+    if (!matchFn(values[i])) keep.push(values[i]);
+  }
+  newRows.forEach(function (r) { keep.push(r); });
+  sheet.clearContents();
+  sheet.getRange(1, 1, keep.length, values[0].length).setValues(keep);
+}
+
+function doGet(e) {
+  const legacySheet = getOrCreateSheet(SHEET_LEGACY, HEADERS_LEGACY);
+  const legacyValues = legacySheet.getDataRange().getValues();
+  const legacy = {};
+  for (let i = 1; i < legacyValues.length; i++) {
+    const bulan = legacyValues[i][0];
+    const produk = legacyValues[i][1];
     if (!bulan || !produk) continue;
-    if (!data[bulan]) data[bulan] = [];
-    data[bulan].push({
+    if (!legacy[bulan]) legacy[bulan] = [];
+    legacy[bulan].push({
       produk: produk.toString(),
-      qty: Number(values[i][2]) || 0,
-      revenue: Number(values[i][3]) || 0
+      qty: Number(legacyValues[i][2]) || 0,
+      revenue: Number(legacyValues[i][3]) || 0
     });
   }
-  return jsonOutput({ ok: true, data: data });
+
+  const ordersSheet = getOrCreateSheet(SHEET_ORDERS, HEADERS_ORDERS);
+  const ordersValues = ordersSheet.getDataRange().getValues();
+  const orders = [];
+  for (let i = 1; i < ordersValues.length; i++) {
+    const row = ordersValues[i];
+    if (!row[0] || !row[2]) continue;
+    orders.push({
+      platform: row[0].toString(),
+      bulan: row[1].toString(),
+      noPesanan: row[2].toString(),
+      produk: row[3].toString(),
+      qty: Number(row[4]) || 0,
+      subtotalKotor: Number(row[5]) || 0,
+      sku: row[7] ? row[7].toString() : ""
+    });
+  }
+
+  const incomeSheet = getOrCreateSheet(SHEET_INCOME, HEADERS_INCOME);
+  const incomeValues = incomeSheet.getDataRange().getValues();
+  const income = [];
+  for (let i = 1; i < incomeValues.length; i++) {
+    const row = incomeValues[i];
+    if (!row[0] || !row[1]) continue;
+    income.push({
+      platform: row[0].toString(),
+      noPesanan: row[1].toString(),
+      totalPenghasilan: Number(row[2]) || 0
+    });
+  }
+
+  const mappingSheet = getOrCreateSheet(SHEET_MAPPING, HEADERS_MAPPING);
+  const mappingValues = mappingSheet.getDataRange().getValues();
+  const mapping = [];
+  for (let i = 1; i < mappingValues.length; i++) {
+    const row = mappingValues[i];
+    if (!row[0] || !row[1]) continue;
+    mapping.push({
+      platform: row[0].toString(),
+      original: row[1].toString(),
+      master: (row[2] || row[1]).toString()
+    });
+  }
+
+  const skuMapSheet = getOrCreateSheet(SHEET_SKUMAP, HEADERS_SKUMAP);
+  const skuMapValues = skuMapSheet.getDataRange().getValues();
+  const skuMap = [];
+  for (let i = 1; i < skuMapValues.length; i++) {
+    const row = skuMapValues[i];
+    if (!row[0] || !row[1]) continue;
+    skuMap.push({ kode: row[0].toString(), nama: row[1].toString() });
+  }
+
+  return jsonOutput({ ok: true, data: legacy, orders: orders, income: income, mapping: mapping, skuMap: skuMap });
 }
 
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
     const action = body.action;
-    const sheet = getSheet();
+    const now = new Date();
 
     if (action === "saveMonth") {
+      const sheet = getOrCreateSheet(SHEET_LEGACY, HEADERS_LEGACY);
       const month = body.month;
-      const rows = body.rows || [];
-      const values = sheet.getDataRange().getValues();
-      const keep = [values[0]];
-      for (let i = 1; i < values.length; i++) {
-        if (values[i][0] !== month) keep.push(values[i]);
-      }
-      const now = new Date();
-      rows.forEach(function (r) {
-        keep.push([month, r.produk, r.qty, r.revenue, now]);
+      const rows = (body.rows || []).map(function (r) {
+        return [month, r.produk, r.qty, r.revenue, now];
       });
-      sheet.clearContents();
-      sheet.getRange(1, 1, keep.length, HEADERS.length).setValues(keep);
+      replaceRowsWhere(sheet, function (row) { return row[0] === month; }, rows);
       return jsonOutput({ ok: true, saved: rows.length });
     }
 
     if (action === "deleteMonth") {
-      const month = body.month;
-      const values = sheet.getDataRange().getValues();
-      const keep = [values[0]];
-      for (let i = 1; i < values.length; i++) {
-        if (values[i][0] !== month) keep.push(values[i]);
-      }
-      sheet.clearContents();
-      sheet.getRange(1, 1, keep.length, HEADERS.length).setValues(keep);
+      const sheet = getOrCreateSheet(SHEET_LEGACY, HEADERS_LEGACY);
+      replaceRowsWhere(sheet, function (row) { return row[0] === body.month; }, []);
       return jsonOutput({ ok: true });
     }
 
-    if (action === "resetAll") {
+    if (action === "saveOrders") {
+      const sheet = getOrCreateSheet(SHEET_ORDERS, HEADERS_ORDERS);
+      const platform = body.platform, month = body.month;
+      const rows = (body.rows || []).map(function (r) {
+        return [platform, month, r.noPesanan, r.produk, r.qty, r.subtotalKotor, now, r.sku || ""];
+      });
+      replaceRowsWhere(sheet, function (row) { return row[0] === platform && row[1] === month; }, rows);
+      return jsonOutput({ ok: true, saved: rows.length });
+    }
+
+    if (action === "deleteOrders") {
+      const sheet = getOrCreateSheet(SHEET_ORDERS, HEADERS_ORDERS);
+      replaceRowsWhere(sheet, function (row) { return row[0] === body.platform && row[1] === body.month; }, []);
+      return jsonOutput({ ok: true });
+    }
+
+    if (action === "saveIncome") {
+      const sheet = getOrCreateSheet(SHEET_INCOME, HEADERS_INCOME);
+      const platform = body.platform;
+      const newIds = {};
+      (body.rows || []).forEach(function (r) { newIds[r.noPesanan] = true; });
+      const rows = (body.rows || []).map(function (r) {
+        return [platform, r.noPesanan, r.totalPenghasilan, now];
+      });
+      replaceRowsWhere(sheet, function (row) {
+        return row[0] === platform && newIds[row[1]];
+      }, rows);
+      return jsonOutput({ ok: true, saved: rows.length });
+    }
+
+    if (action === "deleteIncome") {
+      const sheet = getOrCreateSheet(SHEET_INCOME, HEADERS_INCOME);
+      replaceRowsWhere(sheet, function (row) { return row[0] === body.platform; }, []);
+      return jsonOutput({ ok: true });
+    }
+
+    if (action === "saveMapping") {
+      const sheet = getOrCreateSheet(SHEET_MAPPING, HEADERS_MAPPING);
+      const platform = body.platform, original = body.original, master = body.master;
+      replaceRowsWhere(sheet, function (row) {
+        return row[0] === platform && row[1] === original;
+      }, [[platform, original, master]]);
+      return jsonOutput({ ok: true });
+    }
+
+    if (action === "deleteMapping") {
+      const sheet = getOrCreateSheet(SHEET_MAPPING, HEADERS_MAPPING);
+      replaceRowsWhere(sheet, function (row) {
+        return row[0] === body.platform && row[1] === body.original;
+      }, []);
+      return jsonOutput({ ok: true });
+    }
+
+    if (action === "saveSkuMap") {
+      const sheet = getOrCreateSheet(SHEET_SKUMAP, HEADERS_SKUMAP);
+      const rows = (body.rows || []).map(function (r) { return [r.kode, r.nama]; });
       sheet.clearContents();
-      sheet.appendRow(HEADERS);
+      sheet.appendRow(HEADERS_SKUMAP);
+      if (rows.length) sheet.getRange(2, 1, rows.length, 2).setValues(rows);
+      return jsonOutput({ ok: true, saved: rows.length });
+    }
+
+    if (action === "resetAll") {
+      [[SHEET_LEGACY, HEADERS_LEGACY], [SHEET_ORDERS, HEADERS_ORDERS], [SHEET_INCOME, HEADERS_INCOME], [SHEET_MAPPING, HEADERS_MAPPING], [SHEET_SKUMAP, HEADERS_SKUMAP]].forEach(function (pair) {
+        const sheet = getOrCreateSheet(pair[0], pair[1]);
+        sheet.clearContents();
+        sheet.appendRow(pair[1]);
+      });
       return jsonOutput({ ok: true });
     }
 
@@ -516,6 +681,106 @@ function jsonOutput(obj) {
 
   <div class="stitch tight"></div>
 
+  <!-- ============ UPLOAD PESANAN (ORDER-LEVEL) ============ -->
+  <section id="orders-section">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">02</span> Upload Data Pesanan (per Platform)</h2>
+        <p>Bisa upload <b>file mentah asli</b> (Order_all Shopee / Semua_pesanan TikTok, .xlsx) — otomatis dideteksi platform & bulannya. Atau CSV bersih: <b>No. Pesanan, Nama Produk, Qty, Subtotal Kotor</b> (+ kolom SKU opsional).</p>
+      </div>
+      <button class="btn-gold" id="btn-save-orders" style="display:none;">Simpan Pesanan ke Spreadsheet</button>
+    </div>
+    <div class="field-row">
+      <label>Platform (dipakai kalau upload CSV bersih; xlsx mentah auto-deteksi)
+        <select id="orders-platform-select">
+          <option value="SHOPEE">Shopee</option>
+          <option value="TIKTOK">TikTok Shop</option>
+          <option value="TOKOPEDIA">Tokopedia</option>
+        </select>
+      </label>
+      <label>Bulan (dipakai kalau upload CSV bersih)
+        <select id="orders-month-select"></select>
+      </label>
+    </div>
+    <div class="dropzone small" id="dropzone-orders">
+      <input type="file" id="file-input-orders" accept=".csv,.xlsx">
+      <div class="icon">⬆</div>
+      <div class="main-txt">Klik atau seret file Pesanan ke sini (.xlsx mentah atau .csv bersih)</div>
+      <div class="sub-txt">File mentah: 1 file bisa berisi banyak bulan sekaligus, auto-split</div>
+    </div>
+    <div class="chips" id="orders-chips"></div>
+  </section>
+
+  <div class="stitch tight"></div>
+
+  <!-- ============ UPLOAD INCOME ============ -->
+  <section id="income-section">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">03</span> Upload Data Income (per Platform)</h2>
+        <p>Bisa upload <b>file mentah asli</b> (Income Shopee sheet "Income" / income TikTok sheet "Detail pesanan", .xlsx) — auto-deteksi platform. Atau CSV bersih: <b>No. Pesanan, Total Penghasilan</b>.</p>
+      </div>
+      <button class="btn-gold" id="btn-save-income" style="display:none;">Simpan Income ke Spreadsheet</button>
+    </div>
+    <div class="field-row">
+      <label>Platform (dipakai kalau upload CSV bersih; xlsx mentah auto-deteksi)
+        <select id="income-platform-select">
+          <option value="SHOPEE">Shopee</option>
+          <option value="TIKTOK">TikTok Shop</option>
+          <option value="TOKOPEDIA">Tokopedia</option>
+        </select>
+      </label>
+    </div>
+    <div class="dropzone small" id="dropzone-income">
+      <input type="file" id="file-input-income" accept=".csv,.xlsx">
+      <div class="icon">⬆</div>
+      <div class="main-txt">Klik atau seret file Income ke sini (.xlsx mentah atau .csv bersih)</div>
+      <div class="sub-txt">1 file = 1 platform (boleh gabung banyak bulan)</div>
+    </div>
+    <div class="chips" id="income-chips"></div>
+  </section>
+
+  <div class="stitch tight"></div>
+
+  <!-- ============ PEMETAAN PRODUK ============ -->
+  <section id="mapping-section">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">04</span> Pemetaan Produk Antar Platform</h2>
+        <p>Samakan nama produk yang sama tapi ditulis beda di tiap platform, supaya kehitung jadi 1 produk di dashboard.</p>
+      </div>
+    </div>
+    <div class="panel">
+      <strong>Upload Master Mapping (sekali saja, atau kalau ada produk baru)</strong>
+      <p style="color:var(--text-dim); font-size:12.5px; margin:4px 0 12px;">CSV kolom: <b>Kode Produk, Nama Produk</b>. Karena SKU kamu sama persis di semua platform, ini otomatis berlaku lintas Shopee/TikTok/Tokopedia — nggak perlu dipetakan manual lagi.</p>
+      <div class="dropzone small" id="dropzone-skumap">
+        <input type="file" id="file-input-skumap" accept=".csv,.xlsx">
+        <div class="icon">⬆</div>
+        <div class="main-txt">Klik atau seret CSV/Excel Master Mapping ke sini</div>
+        <div class="sub-txt" id="skumap-status">Belum ada master mapping diupload</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <strong>Belum dipetakan</strong>
+      <p style="color:var(--text-dim); font-size:12.5px; margin:4px 0 0;">Cuma tampil untuk baris pesanan yang SKU-nya kosong atau belum ada di Master Mapping di atas.</p>
+      <table class="mapping-table" id="mapping-unmapped-table">
+        <thead><tr><th>Platform</th><th>Nama Produk Asli</th><th>Nama Produk Master</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="mapping-empty" id="mapping-unmapped-empty" style="display:none;">Semua produk dari data pesanan sudah dipetakan, atau belum ada data pesanan yang diupload.</div>
+
+      <strong style="display:block; margin-top:22px;">Sudah dipetakan</strong>
+      <table class="mapping-table" id="mapping-existing-table">
+        <thead><tr><th>Platform</th><th>Nama Produk Asli</th><th>Nama Produk Master</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="mapping-empty" id="mapping-existing-empty" style="display:none;">Belum ada pemetaan produk.</div>
+    </div>
+  </section>
+
+  <div class="stitch tight"></div>
+
   <!-- ============ EMPTY STATE ============ -->
   <div class="empty" id="empty-state">
     Belum ada data. <b>Upload file CSV</b> di atas untuk melihat dashboard.
@@ -526,7 +791,7 @@ function jsonOutput(obj) {
     <!-- ============ KPI ============ -->
     <section id="kpi-section">
       <div class="section-head">
-        <div><h2><span class="num">02</span> Ringkasan Keseluruhan</h2><p>Akumulasi dari semua bulan yang sudah di-upload.</p></div>
+        <div><h2><span class="num">05</span> Ringkasan Keseluruhan</h2><p>Akumulasi dari semua bulan yang sudah di-upload.</p></div>
       </div>
       <div class="kpi-grid">
         <div class="kpi">
@@ -549,6 +814,11 @@ function jsonOutput(obj) {
           <div class="value" id="kpi-months">0</div>
           <div class="foot" id="kpi-months-foot">—</div>
         </div>
+        <div class="kpi">
+          <div class="label">Menunggu Pencairan</div>
+          <div class="value" id="kpi-pending" style="color:var(--text-muted);">Rp 0</div>
+          <div class="foot" id="kpi-pending-foot">—</div>
+        </div>
       </div>
     </section>
 
@@ -557,7 +827,7 @@ function jsonOutput(obj) {
     <!-- ============ TOP 10 ============ -->
     <section id="top10-section">
       <div class="section-head">
-        <div><h2><span class="num">03</span> Top 10 Produk per Bulan</h2><p>Pilih bulan untuk melihat produk terlaris berdasarkan Qty dan Revenue.</p></div>
+        <div><h2><span class="num">06</span> Top 10 Produk per Bulan</h2><p>Pilih bulan untuk melihat produk terlaris berdasarkan Qty dan Revenue.</p></div>
         <select class="month-select" id="top10-month-select"></select>
       </div>
       <div class="two-col">
@@ -579,7 +849,7 @@ function jsonOutput(obj) {
     <!-- ============ PRODUCT EXPLORER ============ -->
     <section id="explorer-section">
       <div class="section-head">
-        <div><h2><span class="num">04</span> Grafik Tren per Produk</h2><p>Cari atau klik produk di tabel bawah untuk melihat tren Qty & Revenue-nya.</p></div>
+        <div><h2><span class="num">07</span> Grafik Tren per Produk</h2><p>Cari atau klik produk di tabel bawah untuk melihat tren Qty & Revenue-nya.</p></div>
       </div>
       <div class="panel">
         <div class="explorer-head">
@@ -599,7 +869,7 @@ function jsonOutput(obj) {
     <!-- ============ FULL TABLE ============ -->
     <section id="full-table-section">
       <div class="section-head">
-        <div><h2><span class="num">05</span> Tabel Semua Produk</h2><p>Qty & Revenue tiap produk, tiap bulan. Klik header untuk sort, klik baris untuk lihat tren.</p></div>
+        <div><h2><span class="num">08</span> Tabel Semua Produk</h2><p>Qty & Revenue tiap produk, tiap bulan. Klik header untuk sort, klik baris untuk lihat tren.</p></div>
       </div>
       <div class="table-toolbar">
         <input type="text" id="table-search" placeholder="Cari produk di tabel…">
@@ -656,6 +926,16 @@ function jsonOutput(obj) {
   let SHEET_URL = "";
   let dirtyMonths = new Set(); // bulan yang sudah di-upload lokal tapi belum di-tulis ke spreadsheet
 
+  // ---- ledger state (pesanan + income + mapping antar platform) ----
+  let ordersRaw = [];   // [{platform, bulan, noPesanan, produk, sku, qty, subtotalKotor}]
+  let incomeRaw = [];   // [{platform, noPesanan, totalPenghasilan}]
+  let mapping = {};     // key `${platform}|||${namaAsli}` -> namaMaster (fallback, tanpa SKU)
+  let skuMap = {};      // key Kode Produk/SKU -> namaMaster (utama, berlaku lintas platform)
+  let dirtyOrderKeys = new Set();  // `${platform}|||${bulan}` yang belum ditulis ke sheet
+  let dirtyIncomePlatforms = new Set(); // platform yang income-nya belum ditulis ke sheet
+  const LEDGER_STORAGE_KEY = "hypospot_ledger_v1";
+  const PLATFORM_LABEL = {SHOPEE:"Shopee", TIKTOK:"TikTok Shop", TOKOPEDIA:"Tokopedia"};
+
   /* ================= TOAST ================= */
   function showToast(msg, isErr){
     const wrap = document.getElementById("toast-wrap");
@@ -708,7 +988,25 @@ function jsonOutput(obj) {
         Object.keys(serverData).forEach(m => {
           if(!dirtyMonths.has(m)) monthsData[m] = serverData[m];
         });
+
+        const serverOrders = res.orders || [];
+        const keptDirtyOrders = ordersRaw.filter(r => dirtyOrderKeys.has(r.platform+"|||"+r.bulan));
+        const serverOrdersFiltered = serverOrders.filter(r => !dirtyOrderKeys.has(r.platform+"|||"+r.bulan));
+        ordersRaw = serverOrdersFiltered.concat(keptDirtyOrders);
+
+        const serverIncome = res.income || [];
+        const keptDirtyIncome = incomeRaw.filter(r => dirtyIncomePlatforms.has(r.platform));
+        const serverIncomeFiltered = serverIncome.filter(r => !dirtyIncomePlatforms.has(r.platform));
+        incomeRaw = serverIncomeFiltered.concat(keptDirtyIncome);
+
+        mapping = {};
+        (res.mapping || []).forEach(m => { mapping[m.platform+"|||"+m.original] = m.master; });
+
+        skuMap = {};
+        (res.skuMap || []).forEach(m => { skuMap[m.kode] = m.nama; });
+
         saveLocalCache();
+        saveLedgerCache();
         setSyncStatus("connected", monthsPresent().length);
         renderAll();
       }else{
@@ -756,8 +1054,103 @@ function jsonOutput(obj) {
       if(raw) monthsData = JSON.parse(raw) || {};
     }catch(e){ monthsData = {}; }
   }
+  function saveLedgerCache(){
+    try{
+      localStorage.setItem(LEDGER_STORAGE_KEY, JSON.stringify({ordersRaw, incomeRaw, mapping, skuMap}));
+    }catch(e){}
+  }
+  function loadLedgerCache(){
+    try{
+      const raw = localStorage.getItem(LEDGER_STORAGE_KEY);
+      if(raw){
+        const parsed = JSON.parse(raw) || {};
+        ordersRaw = parsed.ordersRaw || [];
+        incomeRaw = parsed.incomeRaw || [];
+        mapping = parsed.mapping || {};
+        skuMap = parsed.skuMap || {};
+      }
+    }catch(e){ ordersRaw=[]; incomeRaw=[]; mapping={}; skuMap={}; }
+  }
+
+  /* ================= LEDGER: matching pesanan + income + mapping ================= */
+  function canonicalName(platform, produk, sku){
+    if(sku && skuMap[sku]) return skuMap[sku];
+    return mapping[platform+"|||"+produk] || produk;
+  }
+
+  // Hasil: { months: {BULAN:[{produk,qty,revenue}]}, pendingByMonth: {BULAN: totalRp}, pendingTotal: totalRp, pendingCount: n }
+  function computeLedger(){
+    const incomeMap = {}; // `${platform}|||${noPesanan}` -> total
+    incomeRaw.forEach(r => {
+      const key = r.platform+"|||"+r.noPesanan;
+      incomeMap[key] = (incomeMap[key]||0) + (r.totalPenghasilan||0);
+    });
+
+    const orderGross = {}; // `${platform}|||${noPesanan}` -> sum subtotalKotor
+    ordersRaw.forEach(r => {
+      const key = r.platform+"|||"+r.noPesanan;
+      orderGross[key] = (orderGross[key]||0) + (r.subtotalKotor||0);
+    });
+
+    const months = {};
+    let pendingTotal = 0, pendingCount = 0;
+    const pendingByMonth = {};
+    const pendingOrderIds = new Set();
+
+    ordersRaw.forEach(r => {
+      const orderKey = r.platform+"|||"+r.noPesanan;
+      const net = incomeMap[orderKey];
+      const gross = orderGross[orderKey] || 0;
+      const produkFinal = canonicalName(r.platform, r.produk, r.sku);
+      if(!months[r.bulan]) months[r.bulan] = {};
+      if(!months[r.bulan][produkFinal]) months[r.bulan][produkFinal] = {qty:0, revenue:0};
+
+      months[r.bulan][produkFinal].qty += (r.qty||0);
+
+      if(net !== undefined && gross > 0){
+        months[r.bulan][produkFinal].revenue += net * ((r.subtotalKotor||0) / gross);
+      }else{
+        const g = r.subtotalKotor || 0;
+        pendingTotal += g;
+        pendingByMonth[r.bulan] = (pendingByMonth[r.bulan]||0) + g;
+        if(!pendingOrderIds.has(orderKey)){ pendingOrderIds.add(orderKey); pendingCount++; }
+      }
+    });
+
+    const monthsArr = {};
+    Object.keys(months).forEach(bulan => {
+      monthsArr[bulan] = Object.keys(months[bulan]).map(produk => ({
+        produk, qty: months[bulan][produk].qty, revenue: months[bulan][produk].revenue
+      }));
+    });
+
+    return {months: monthsArr, pendingByMonth, pendingTotal, pendingCount};
+  }
+
+  function getEffectiveMonthsData(){
+    const ledger = computeLedger();
+    const combined = {};
+    Object.keys(monthsData).forEach(m => { combined[m] = (monthsData[m]||[]).map(r=>({...r})); });
+    Object.keys(ledger.months).forEach(m => {
+      if(!combined[m]) combined[m] = [];
+      combined[m] = combined[m].concat(ledger.months[m]);
+    });
+    // gabungkan baris produk yang sama dalam 1 bulan (jaga-jaga overlap legacy vs ledger)
+    Object.keys(combined).forEach(m => {
+      const merged = {};
+      combined[m].forEach(r => {
+        if(!merged[r.produk]) merged[r.produk] = {produk:r.produk, qty:0, revenue:0};
+        merged[r.produk].qty += r.qty;
+        merged[r.produk].revenue += r.revenue;
+      });
+      combined[m] = Object.values(merged);
+    });
+    return combined;
+  }
+
   function monthsPresent(){
-    return MONTH_ORDER.filter(m => monthsData[m] && monthsData[m].length);
+    const eff = getEffectiveMonthsData();
+    return MONTH_ORDER.filter(m => eff[m] && eff[m].length);
   }
 
   /* ================= CSV PARSING ================= */
@@ -831,6 +1224,334 @@ function jsonOutput(obj) {
       }
     }
     renderPending();
+    renderAll();
+  }
+
+  /* ================= LEDGER: parsing & staging Pesanan ================= */
+  function parseOrdersFile(file){
+    return new Promise((resolve) => {
+      Papa.parse(file, {
+        header:true,
+        skipEmptyLines:true,
+        complete: (res) => {
+          const rows = res.data.map(r => {
+            const noPesanan = (r["No. Pesanan"] || r["No Pesanan"] || "").toString().trim();
+            const produk = (r["Nama Produk"] || "").toString().trim();
+            const sku = (r["SKU"] || r["Kode Produk"] || "").toString().trim();
+            const qty = parseFloat((r["Qty"] || "0").toString().replace(/[^\d.-]/g,"")) || 0;
+            const subtotalKotor = parseFloat((r["Subtotal Kotor"] || r["Sub Total"] || "0").toString().replace(/[^\d.-]/g,"")) || 0;
+            return {noPesanan, produk, sku, qty, subtotalKotor};
+          }).filter(r => r.noPesanan && r.produk);
+          resolve(rows);
+        },
+        error: () => resolve([])
+      });
+    });
+  }
+
+  function stageOrders(platform, bulan, rows){
+    const key = platform+"|||"+bulan;
+    ordersRaw = ordersRaw.filter(r => (r.platform+"|||"+r.bulan) !== key);
+    rows.forEach(r => ordersRaw.push({platform, bulan, noPesanan:r.noPesanan, produk:r.produk, sku:r.sku||"", qty:r.qty, subtotalKotor:r.subtotalKotor}));
+    dirtyOrderKeys.add(key);
+    saveLedgerCache();
+    renderAll();
+  }
+
+  /* ================= LEDGER: baca file MENTAH .xlsx langsung (auto-deteksi) ================= */
+  function parseIndoNumber(x){
+    if(x===null || x===undefined || x==="") return 0;
+    if(typeof x === "number") return x;
+    const s = x.toString().trim().replace(/\./g,"").replace(/,/g,".");
+    const n = parseFloat(s);
+    return isNaN(n) ? 0 : n;
+  }
+  function excelDateToMonth(v){
+    let d = null;
+    if(v instanceof Date){
+      d = v;
+    }else if(typeof v === "number"){
+      d = new Date(Math.round((v - 25569) * 86400 * 1000));
+    }else if(typeof v === "string"){
+      const s = v.trim();
+      let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);           // YYYY-MM-DD...
+      if(m){ d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3])); }
+      else{
+        m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);            // DD/MM/YYYY...
+        if(m){ d = new Date(Number(m[3]), Number(m[2])-1, Number(m[1])); }
+        else{ const p = new Date(s); if(!isNaN(p.getTime())) d = p; }
+      }
+    }
+    if(!d || isNaN(d.getTime())) return null;
+    return MONTH_ORDER[d.getMonth()];
+  }
+  function findHeaderRowIndex(rows, requiredHeaders){
+    for(let i=0;i<Math.min(rows.length,20);i++){
+      const row = (rows[i]||[]).map(c => (c===null||c===undefined?"":c.toString().trim()));
+      if(requiredHeaders.every(h => row.includes(h))) return i;
+    }
+    return -1;
+  }
+  function rowsToObjects(rows, headerIdx){
+    const headers = (rows[headerIdx]||[]).map(c => (c===null||c===undefined?"":c.toString().trim()));
+    const out = [];
+    for(let i=headerIdx+1;i<rows.length;i++){
+      const r = rows[i];
+      if(!r || r.every(c=>c===null||c===undefined||c==="")) continue;
+      const obj = {};
+      headers.forEach((h,idx)=>{ if(h) obj[h]=r[idx]; });
+      out.push(obj);
+    }
+    return out;
+  }
+  function detectRawWorkbook(wb){
+    const names = wb.SheetNames;
+    const findCI = (n) => names.find(x => x.toLowerCase()===n);
+    if(findCI("orders")) return {platform:"SHOPEE", kind:"orders", sheetName: findCI("orders")};
+    if(findCI("orderskulist")) return {platform:"TIKTOK", kind:"orders", sheetName: findCI("orderskulist")};
+    if(names.includes("Income")) return {platform:"SHOPEE", kind:"income", sheetName:"Income"};
+    if(findCI("detail pesanan")) return {platform:"TIKTOK", kind:"income", sheetName: findCI("detail pesanan")};
+    return null;
+  }
+  function parseRawOrders(wb, detection){
+    const ws = wb.Sheets[detection.sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    const grouped = {};
+    if(detection.platform === "SHOPEE"){
+      const headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Status Pesanan","Nama Produk","SKU Induk","Jumlah","Subtotal Pesanan"]);
+      if(headerIdx<0) return null;
+      rowsToObjects(rows, headerIdx).forEach(o=>{
+        if((o["Status Pesanan"]||"").toString().trim()==="Batal") return;
+        const bulan = excelDateToMonth(o["Waktu Pesanan Dibuat"]) || excelDateToMonth(o["Waktu Pembayaran Dilakukan"]);
+        const noPesanan = (o["No. Pesanan"]||"").toString().trim();
+        const produk = (o["Nama Produk"]||"").toString().trim();
+        if(!bulan || !noPesanan || !produk) return;
+        const sku = (o["SKU Induk"]||"").toString().trim();
+        const qty = parseIndoNumber(o["Jumlah"]);
+        const subtotalKotor = parseIndoNumber(o["Subtotal Pesanan"]);
+        if(!grouped[bulan]) grouped[bulan]=[];
+        grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
+      });
+      return grouped;
+    }
+    if(detection.platform === "TIKTOK"){
+      const headerIdx = findHeaderRowIndex(rows, ["Order ID","Order Status","Product Name","Seller SKU","Quantity","SKU Subtotal After Discount"]);
+      if(headerIdx<0) return null;
+      rowsToObjects(rows, headerIdx).forEach(o=>{
+        if((o["Order Status"]||"").toString().trim()==="Dibatalkan") return;
+        const bulan = excelDateToMonth(o["Created Time"]);
+        const noPesanan = (o["Order ID"]||"").toString().trim();
+        const produk = (o["Product Name"]||"").toString().trim();
+        if(!bulan || !noPesanan || !produk) return;
+        const sku = (o["Seller SKU"]||"").toString().trim();
+        const qty = parseIndoNumber(o["Quantity"]);
+        const subtotalKotor = parseIndoNumber(o["SKU Subtotal After Discount"]);
+        if(!grouped[bulan]) grouped[bulan]=[];
+        grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
+      });
+      return grouped;
+    }
+    return null;
+  }
+  function parseRawIncome(wb, detection){
+    const ws = wb.Sheets[detection.sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    if(detection.platform === "SHOPEE"){
+      const headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Total Penghasilan"]);
+      if(headerIdx<0) return null;
+      return rowsToObjects(rows, headerIdx).map(o=>({
+        noPesanan: (o["No. Pesanan"]||"").toString().trim(),
+        totalPenghasilan: parseIndoNumber(o["Total Penghasilan"])
+      })).filter(r=>r.noPesanan);
+    }
+    if(detection.platform === "TIKTOK"){
+      const headerIdx = findHeaderRowIndex(rows, ["ID Pesanan/Penyesuaian","Jumlah penyelesaian pembayaran"]);
+      if(headerIdx<0) return null;
+      return rowsToObjects(rows, headerIdx).map(o=>({
+        noPesanan: (o["ID Pesanan/Penyesuaian"]||"").toString().trim(),
+        totalPenghasilan: parseIndoNumber(o["Jumlah penyelesaian pembayaran"])
+      })).filter(r=>r.noPesanan);
+    }
+    return null;
+  }
+
+  async function handleOrdersFile(file){
+    if(!file){ return; }
+    const name = file.name.toLowerCase();
+    if(name.endsWith(".xlsx")){
+      try{
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array", cellDates:true});
+        const detection = detectRawWorkbook(wb);
+        if(!detection || detection.kind !== "orders"){
+          showToast("File ini nggak terdeteksi sebagai file Pesanan mentah yang dikenali (Shopee Order_all / TikTok Semua_pesanan). Kalau ini file Income, upload di section 03 ya.", true);
+          return;
+        }
+        const grouped = parseRawOrders(wb, detection);
+        const bulanList = grouped ? Object.keys(grouped) : [];
+        if(!bulanList.length){
+          showToast("Nggak ada baris valid kebaca dari file mentah ini. Cek lagi apakah kolom/formatnya masih standar bawaan platform.", true);
+          return;
+        }
+        document.getElementById("orders-platform-select").value = detection.platform;
+        let totalRows = 0;
+        bulanList.forEach(bulan => { stageOrders(detection.platform, bulan, grouped[bulan]); totalRows += grouped[bulan].length; });
+        showToast(`${PLATFORM_LABEL[detection.platform]}: ${totalRows} baris pesanan (${bulanList.join(", ")}) otomatis kebaca dari file mentah ✓ Klik "Simpan Pesanan ke Spreadsheet" kalau sudah yakin.`);
+      }catch(err){
+        showToast(`Gagal baca file xlsx: ${err.message}`, true);
+      }
+      return;
+    }
+    if(!name.endsWith(".csv")){ showToast("File harus format .csv atau .xlsx ya", true); return; }
+    const platform = document.getElementById("orders-platform-select").value;
+    const bulan = document.getElementById("orders-month-select").value;
+    const rows = await parseOrdersFile(file);
+    if(!rows.length){
+      showToast("Nggak ada baris valid kebaca dari file itu. Cek lagi format kolomnya (No. Pesanan, Nama Produk, Qty, Subtotal Kotor).", true);
+      return;
+    }
+    stageOrders(platform, bulan, rows);
+    showToast(`${rows.length} baris pesanan ${PLATFORM_LABEL[platform]} bulan ${bulan} ditampung, klik "Simpan Pesanan ke Spreadsheet" kalau sudah yakin.`);
+  }
+
+  async function saveDirtyOrders(){
+    if(!SHEET_URL){ showToast("Sambungkan Google Sheet dulu di bagian atas ya.", true); return; }
+    const keys = Array.from(dirtyOrderKeys);
+    if(!keys.length) return;
+    const btn = document.getElementById("btn-save-orders");
+    btn.disabled = true; btn.textContent = "Menyimpan…";
+    for(const key of keys){
+      const [platform, bulan] = key.split("|||");
+      const rows = ordersRaw.filter(r => r.platform===platform && r.bulan===bulan);
+      try{
+        const res = await apiPost("saveOrders", {platform, month:bulan, rows});
+        if(res && res.ok){
+          dirtyOrderKeys.delete(key);
+          showToast(`Pesanan ${PLATFORM_LABEL[platform]} ${bulan} tersimpan ✓ (${res.saved} baris)`);
+        }else{
+          showToast(`Gagal simpan pesanan ${platform} ${bulan}: ${res && res.error}`, true);
+        }
+      }catch(err){
+        showToast(`Gagal konek ke spreadsheet: ${err.message}`, true);
+      }
+    }
+    btn.disabled = false;
+    saveLedgerCache();
+    renderAll();
+  }
+
+  /* ================= LEDGER: parsing & staging Income ================= */
+  function parseIncomeFile(file){
+    return new Promise((resolve) => {
+      Papa.parse(file, {
+        header:true,
+        skipEmptyLines:true,
+        complete: (res) => {
+          const rows = res.data.map(r => {
+            const noPesanan = (r["No. Pesanan"] || r["No Pesanan"] || "").toString().trim();
+            const totalPenghasilan = parseFloat((r["Total Penghasilan"] || "0").toString().replace(/[^\d.-]/g,"")) || 0;
+            return {noPesanan, totalPenghasilan};
+          }).filter(r => r.noPesanan);
+          resolve(rows);
+        },
+        error: () => resolve([])
+      });
+    });
+  }
+
+  function stageIncome(platform, rows){
+    const byId = {};
+    incomeRaw.filter(r => r.platform===platform).forEach(r => byId[r.noPesanan]=r);
+    rows.forEach(r => byId[r.noPesanan] = {platform, noPesanan:r.noPesanan, totalPenghasilan:r.totalPenghasilan});
+    incomeRaw = incomeRaw.filter(r => r.platform!==platform).concat(Object.values(byId));
+    dirtyIncomePlatforms.add(platform);
+    saveLedgerCache();
+    renderAll();
+  }
+
+  async function handleIncomeFile(file){
+    if(!file){ return; }
+    const name = file.name.toLowerCase();
+    if(name.endsWith(".xlsx")){
+      try{
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array", cellDates:true});
+        const detection = detectRawWorkbook(wb);
+        if(!detection || detection.kind !== "income"){
+          showToast("File ini nggak terdeteksi sebagai file Income mentah yang dikenali. Kalau ini file Pesanan, upload di section 02 ya.", true);
+          return;
+        }
+        const rows = parseRawIncome(wb, detection);
+        if(!rows || !rows.length){
+          showToast("Nggak ada baris valid kebaca dari file mentah ini.", true);
+          return;
+        }
+        document.getElementById("income-platform-select").value = detection.platform;
+        stageIncome(detection.platform, rows);
+        showToast(`${PLATFORM_LABEL[detection.platform]}: ${rows.length} baris income otomatis kebaca dari file mentah ✓ Klik "Simpan Income ke Spreadsheet" kalau sudah yakin.`);
+      }catch(err){
+        showToast(`Gagal baca file xlsx: ${err.message}`, true);
+      }
+      return;
+    }
+    if(!name.endsWith(".csv")){ showToast("File harus format .csv atau .xlsx ya", true); return; }
+    const platform = document.getElementById("income-platform-select").value;
+    const rows = await parseIncomeFile(file);
+    if(!rows.length){
+      showToast("Nggak ada baris valid kebaca. Cek lagi format kolomnya (No. Pesanan, Total Penghasilan).", true);
+      return;
+    }
+    stageIncome(platform, rows);
+    showToast(`${rows.length} baris income ${PLATFORM_LABEL[platform]} ditampung, klik "Simpan Income ke Spreadsheet" kalau sudah yakin.`);
+  }
+
+  async function saveDirtyIncome(){
+    if(!SHEET_URL){ showToast("Sambungkan Google Sheet dulu di bagian atas ya.", true); return; }
+    const platforms = Array.from(dirtyIncomePlatforms);
+    if(!platforms.length) return;
+    const btn = document.getElementById("btn-save-income");
+    btn.disabled = true; btn.textContent = "Menyimpan…";
+    for(const platform of platforms){
+      const rows = incomeRaw.filter(r => r.platform===platform);
+      try{
+        const res = await apiPost("saveIncome", {platform, rows});
+        if(res && res.ok){
+          dirtyIncomePlatforms.delete(platform);
+          showToast(`Income ${PLATFORM_LABEL[platform]} tersimpan ✓ (${res.saved} baris)`);
+        }else{
+          showToast(`Gagal simpan income ${platform}: ${res && res.error}`, true);
+        }
+      }catch(err){
+        showToast(`Gagal konek ke spreadsheet: ${err.message}`, true);
+      }
+    }
+    btn.disabled = false;
+    saveLedgerCache();
+    renderAll();
+  }
+
+  /* ================= LEDGER: pemetaan produk ================= */
+  async function saveMappingRow(platform, original, master){
+    mapping[platform+"|||"+original] = master;
+    saveLedgerCache();
+    if(SHEET_URL){
+      try{
+        const res = await apiPost("saveMapping", {platform, original, master});
+        if(res && res.ok) showToast(`Pemetaan "${original}" → "${master}" tersimpan ✓`);
+        else showToast(`Gagal simpan pemetaan: ${res && res.error}`, true);
+      }catch(err){ showToast(`Gagal konek ke spreadsheet: ${err.message}`, true); }
+    }else{
+      showToast("Pemetaan disimpan lokal. Sambungkan Google Sheet biar permanen.");
+    }
+    renderAll();
+  }
+
+  async function removeMappingRow(platform, original){
+    delete mapping[platform+"|||"+original];
+    saveLedgerCache();
+    if(SHEET_URL){
+      try{ await apiPost("deleteMapping", {platform, original}); }catch(err){}
+    }
     renderAll();
   }
 
@@ -908,9 +1629,10 @@ function jsonOutput(obj) {
 
   /* ================= AGGREGATION ================= */
   function buildProductMap(){
+    const eff = getEffectiveMonthsData();
     const map = {}; // produk -> {qty:{month:val}, rev:{month:val}, totalQty, totalRev}
     monthsPresent().forEach(month => {
-      monthsData[month].forEach(r => {
+      eff[month].forEach(r => {
         if(!map[r.produk]) map[r.produk] = {qty:{}, rev:{}, totalQty:0, totalRev:0};
         map[r.produk].qty[month] = (map[r.produk].qty[month]||0) + r.qty;
         map[r.produk].rev[month] = (map[r.produk].rev[month]||0) + r.revenue;
@@ -923,11 +1645,12 @@ function jsonOutput(obj) {
 
   /* ================= RENDER: KPI ================= */
   function renderKPI(productMap, present){
+    const eff = getEffectiveMonthsData();
     let totalRev=0, totalQty=0;
     let perMonthQty = {};
     present.forEach(m=>{
       let mq=0, mr=0;
-      monthsData[m].forEach(r=>{ mq+=r.qty; mr+=r.revenue; });
+      eff[m].forEach(r=>{ mq+=r.qty; mr+=r.revenue; });
       perMonthQty[m]=mq;
       totalRev+=mr; totalQty+=mq;
     });
@@ -942,10 +1665,17 @@ function jsonOutput(obj) {
     document.getElementById("kpi-peak-qty-foot").textContent = peakMonth ? `bulan ${peakMonth}` : "—";
     document.getElementById("kpi-months").textContent = present.length;
     document.getElementById("kpi-months-foot").textContent = present.length ? present.map(m=>MONTH_SHORT[m]).join(", ") : "—";
+
+    const ledger = computeLedger();
+    document.getElementById("kpi-pending").textContent = fmtIDR(ledger.pendingTotal);
+    document.getElementById("kpi-pending-foot").textContent = ledger.pendingCount
+      ? `${ledger.pendingCount} pesanan belum ada data income`
+      : "Semua pesanan sudah ada income-nya";
   }
 
   /* ================= RENDER: TOP 10 ================= */
   function renderTop10(){
+    const eff = getEffectiveMonthsData();
     const present = monthsPresent();
     const sel = document.getElementById("top10-month-select");
     const prevVal = sel.value;
@@ -955,7 +1685,7 @@ function jsonOutput(obj) {
 
     const month = sel.value;
     if(!month) return;
-    const rows = (monthsData[month]||[]).slice();
+    const rows = (eff[month]||[]).slice();
 
     const topQty = rows.slice().sort((a,b)=>b.qty-a.qty).slice(0,10);
     const topRev = rows.slice().sort((a,b)=>b.revenue-a.revenue).slice(0,10);
@@ -1162,8 +1892,209 @@ function jsonOutput(obj) {
   }
 
   /* ================= MASTER RENDER ================= */
+  function renderOrdersChips(){
+    const wrap = document.getElementById("orders-chips");
+    const keys = {};
+    ordersRaw.forEach(r => {
+      const k = r.platform+"|||"+r.bulan;
+      if(!keys[k]) keys[k] = {platform:r.platform, bulan:r.bulan, count:0, orders:new Set()};
+      keys[k].count++; keys[k].orders.add(r.noPesanan);
+    });
+    const entries = Object.entries(keys);
+    if(!entries.length){ wrap.innerHTML = `<span style="color:var(--text-dim); font-size:13px;">Belum ada data pesanan diupload.</span>`; return; }
+    wrap.innerHTML = entries.map(([key, v]) => {
+      const dirty = dirtyOrderKeys.has(key);
+      const pClass = v.platform.toLowerCase();
+      return `<div class="chip">
+        <span class="dot" style="background:${dirty ? 'var(--gold)' : 'var(--green)'}"></span>
+        <span class="platform-chip ${pClass}">${PLATFORM_LABEL[v.platform]}</span>
+        ${v.bulan} <span style="color:var(--text-dim); font-weight:400;">(${v.orders.size} pesanan${dirty?' · belum disimpan':''})</span>
+        <button data-key="${key}" title="Hapus data ini">✕</button>
+      </div>`;
+    }).join("");
+    wrap.querySelectorAll("button[data-key]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const [platform, bulan] = btn.dataset.key.split("|||");
+        ordersRaw = ordersRaw.filter(r => !(r.platform===platform && r.bulan===bulan));
+        dirtyOrderKeys.delete(btn.dataset.key);
+        saveLedgerCache(); renderAll();
+        if(SHEET_URL){
+          try{ await apiPost("deleteOrders", {platform, month:bulan}); showToast(`Pesanan ${PLATFORM_LABEL[platform]} ${bulan} dihapus dari spreadsheet`); }
+          catch(err){ showToast(`Gagal hapus di spreadsheet: ${err.message}`, true); }
+        }
+      });
+    });
+    const saveBtn = document.getElementById("btn-save-orders");
+    saveBtn.style.display = dirtyOrderKeys.size ? "inline-block" : "none";
+    if(dirtyOrderKeys.size) saveBtn.textContent = `Simpan Pesanan ke Spreadsheet (${dirtyOrderKeys.size})`;
+  }
+
+  function renderIncomeChips(){
+    const wrap = document.getElementById("income-chips");
+    const byPlatform = {};
+    incomeRaw.forEach(r => {
+      if(!byPlatform[r.platform]) byPlatform[r.platform] = 0;
+      byPlatform[r.platform]++;
+    });
+    const entries = Object.entries(byPlatform);
+    if(!entries.length){ wrap.innerHTML = `<span style="color:var(--text-dim); font-size:13px;">Belum ada data income diupload.</span>`; return; }
+    wrap.innerHTML = entries.map(([platform, count]) => {
+      const dirty = dirtyIncomePlatforms.has(platform);
+      const pClass = platform.toLowerCase();
+      return `<div class="chip">
+        <span class="dot" style="background:${dirty ? 'var(--gold)' : 'var(--green)'}"></span>
+        <span class="platform-chip ${pClass}">${PLATFORM_LABEL[platform]}</span>
+        <span style="color:var(--text-dim); font-weight:400;">(${count} pesanan${dirty?' · belum disimpan':''})</span>
+        <button data-platform="${platform}" title="Hapus data ini">✕</button>
+      </div>`;
+    }).join("");
+    wrap.querySelectorAll("button[data-platform]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const platform = btn.dataset.platform;
+        incomeRaw = incomeRaw.filter(r => r.platform !== platform);
+        dirtyIncomePlatforms.delete(platform);
+        saveLedgerCache(); renderAll();
+        if(SHEET_URL){
+          try{ await apiPost("deleteIncome", {platform}); showToast(`Income ${PLATFORM_LABEL[platform]} dihapus dari spreadsheet`); }
+          catch(err){ showToast(`Gagal hapus di spreadsheet: ${err.message}`, true); }
+        }
+      });
+    });
+    const saveBtn = document.getElementById("btn-save-income");
+    saveBtn.style.display = dirtyIncomePlatforms.size ? "inline-block" : "none";
+    if(dirtyIncomePlatforms.size) saveBtn.textContent = `Simpan Income ke Spreadsheet (${dirtyIncomePlatforms.size})`;
+  }
+
+  /* ================= LEDGER: upload Master SKU Mapping ================= */
+  function parseSkuMapCsv(file){
+    return new Promise((resolve) => {
+      Papa.parse(file, {
+        header:true, skipEmptyLines:true,
+        complete: (res) => {
+          const rows = res.data.map(r => ({
+            kode: (r["Kode Produk"] || r["SKU"] || "").toString().trim(),
+            nama: (r["Nama Produk"] || r["Nama Produk Master"] || "").toString().trim()
+          })).filter(r => r.kode && r.nama);
+          resolve(rows);
+        },
+        error: () => resolve([])
+      });
+    });
+  }
+  async function handleSkuMapFile(file){
+    if(!file) return;
+    const name = file.name.toLowerCase();
+    let rows = [];
+    if(name.endsWith(".xlsx")){
+      try{
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array"});
+        const sheetName = wb.SheetNames.find(n => n.toLowerCase()==="mapping") || wb.SheetNames[0];
+        const ws = wb.Sheets[sheetName];
+        const arr = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+        const headerIdx = findHeaderRowIndex(arr, ["Kode Produk","Nama Produk"]);
+        if(headerIdx>=0){
+          rows = rowsToObjects(arr, headerIdx).map(o=>({
+            kode:(o["Kode Produk"]||"").toString().trim(),
+            nama:(o["Nama Produk"]||"").toString().trim()
+          })).filter(r=>r.kode && r.nama);
+        }
+      }catch(err){ showToast(`Gagal baca xlsx: ${err.message}`, true); return; }
+    }else if(name.endsWith(".csv")){
+      rows = await parseSkuMapCsv(file);
+    }else{
+      showToast("File harus format .csv atau .xlsx ya", true); return;
+    }
+    if(!rows.length){ showToast("Nggak ada baris valid kebaca. Cek lagi kolomnya (Kode Produk, Nama Produk).", true); return; }
+    // dedupe by kode (ambil nama unik pertama)
+    const dedup = {};
+    rows.forEach(r => { if(!dedup[r.kode]) dedup[r.kode] = r.nama; });
+    skuMap = dedup;
+    saveLedgerCache();
+    renderAll();
+    if(SHEET_URL){
+      try{
+        const res = await apiPost("saveSkuMap", {rows: Object.keys(dedup).map(k=>({kode:k, nama:dedup[k]}))});
+        if(res && res.ok) showToast(`Master Mapping tersimpan ✓ (${res.saved} produk)`);
+        else showToast(`Gagal simpan master mapping: ${res && res.error}`, true);
+      }catch(err){ showToast(`Gagal konek ke spreadsheet: ${err.message}`, true); }
+    }else{
+      showToast(`${Object.keys(dedup).length} produk master mapping ditampung lokal. Sambungkan Google Sheet biar permanen.`);
+    }
+  }
+
+  function renderMappingTables(){
+    const seen = new Set();
+    const unmapped = [];
+    ordersRaw.forEach(r => {
+      if(r.sku && skuMap[r.sku]) return; // sudah resolve lewat Master Mapping SKU, skip
+      const key = r.platform+"|||"+r.produk;
+      if(seen.has(key)) return;
+      seen.add(key);
+      if(!mapping[key]) unmapped.push({platform:r.platform, original:r.produk});
+    });
+
+    const skuStatus = document.getElementById("skumap-status");
+    const skuCount = Object.keys(skuMap).length;
+    skuStatus.textContent = skuCount ? `${skuCount} produk sudah ada di Master Mapping` : "Belum ada master mapping diupload";
+
+    const unmappedBody = document.querySelector("#mapping-unmapped-table tbody");
+    const unmappedEmpty = document.getElementById("mapping-unmapped-empty");
+    if(!unmapped.length){
+      unmappedBody.innerHTML = "";
+      unmappedEmpty.style.display = "block";
+    }else{
+      unmappedEmpty.style.display = "none";
+      unmappedBody.innerHTML = unmapped.map((u,i) => `
+        <tr>
+          <td><span class="platform-chip ${u.platform.toLowerCase()}">${PLATFORM_LABEL[u.platform]}</span></td>
+          <td>${u.original}</td>
+          <td><input type="text" data-idx="${i}" placeholder="Nama master…" value="${u.original}"></td>
+          <td><button class="btn-small save" data-idx="${i}">Simpan</button></td>
+        </tr>
+      `).join("");
+      unmappedBody.querySelectorAll("button.save").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const idx = btn.dataset.idx;
+          const input = unmappedBody.querySelector(`input[data-idx="${idx}"]`);
+          const u = unmapped[idx];
+          const master = input.value.trim() || u.original;
+          saveMappingRow(u.platform, u.original, master);
+        });
+      });
+    }
+
+    const existingBody = document.querySelector("#mapping-existing-table tbody");
+    const existingEmpty = document.getElementById("mapping-existing-empty");
+    const existingKeys = Object.keys(mapping);
+    if(!existingKeys.length){
+      existingBody.innerHTML = "";
+      existingEmpty.style.display = "block";
+    }else{
+      existingEmpty.style.display = "none";
+      existingBody.innerHTML = existingKeys.map(key => {
+        const [platform, original] = key.split("|||");
+        return `
+        <tr>
+          <td><span class="platform-chip ${platform.toLowerCase()}">${PLATFORM_LABEL[platform]||platform}</span></td>
+          <td>${original}</td>
+          <td>${mapping[key]}</td>
+          <td><button class="btn-small remove" data-platform="${platform}" data-original="${encodeURIComponent(original)}">Hapus</button></td>
+        </tr>`;
+      }).join("");
+      existingBody.querySelectorAll("button.remove").forEach(btn => {
+        btn.addEventListener("click", () => {
+          removeMappingRow(btn.dataset.platform, decodeURIComponent(btn.dataset.original));
+        });
+      });
+    }
+  }
+
   function renderAll(){
     renderChips();
+    renderOrdersChips();
+    renderIncomeChips();
+    renderMappingTables();
     const present = monthsPresent();
     const hasData = present.length > 0;
     document.getElementById("empty-state").style.display = hasData ? "none" : "block";
@@ -1189,13 +2120,43 @@ function jsonOutput(obj) {
 
   document.getElementById("btn-save-sheet").addEventListener("click", saveDirtyMonths);
 
+  // ---- dropzone Data Pesanan ----
+  const dropzoneOrders = document.getElementById("dropzone-orders");
+  const fileInputOrders = document.getElementById("file-input-orders");
+  dropzoneOrders.addEventListener("click", ()=> fileInputOrders.click());
+  fileInputOrders.addEventListener("change", (e)=> { if(e.target.files[0]) handleOrdersFile(e.target.files[0]); e.target.value=""; });
+  ["dragenter","dragover"].forEach(evt => dropzoneOrders.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneOrders.classList.add("drag"); }));
+  ["dragleave","drop"].forEach(evt => dropzoneOrders.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneOrders.classList.remove("drag"); }));
+  dropzoneOrders.addEventListener("drop", (e)=>{ if(e.dataTransfer.files[0]) handleOrdersFile(e.dataTransfer.files[0]); });
+  document.getElementById("btn-save-orders").addEventListener("click", saveDirtyOrders);
+
+  // ---- dropzone Data Income ----
+  const dropzoneIncome = document.getElementById("dropzone-income");
+  const fileInputIncome = document.getElementById("file-input-income");
+  dropzoneIncome.addEventListener("click", ()=> fileInputIncome.click());
+  fileInputIncome.addEventListener("change", (e)=> { if(e.target.files[0]) handleIncomeFile(e.target.files[0]); e.target.value=""; });
+  ["dragenter","dragover"].forEach(evt => dropzoneIncome.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneIncome.classList.add("drag"); }));
+  ["dragleave","drop"].forEach(evt => dropzoneIncome.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneIncome.classList.remove("drag"); }));
+  dropzoneIncome.addEventListener("drop", (e)=>{ if(e.dataTransfer.files[0]) handleIncomeFile(e.dataTransfer.files[0]); });
+  document.getElementById("btn-save-income").addEventListener("click", saveDirtyIncome);
+
+  // ---- dropzone Master SKU Mapping ----
+  const dropzoneSkuMap = document.getElementById("dropzone-skumap");
+  const fileInputSkuMap = document.getElementById("file-input-skumap");
+  dropzoneSkuMap.addEventListener("click", ()=> fileInputSkuMap.click());
+  fileInputSkuMap.addEventListener("change", (e)=> { if(e.target.files[0]) handleSkuMapFile(e.target.files[0]); e.target.value=""; });
+  ["dragenter","dragover"].forEach(evt => dropzoneSkuMap.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneSkuMap.classList.add("drag"); }));
+  ["dragleave","drop"].forEach(evt => dropzoneSkuMap.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneSkuMap.classList.remove("drag"); }));
+  dropzoneSkuMap.addEventListener("drop", (e)=>{ if(e.dataTransfer.files[0]) handleSkuMapFile(e.dataTransfer.files[0]); });
+
   document.getElementById("btn-reset").addEventListener("click", async ()=>{
     const msg = SHEET_URL
       ? "Hapus semua data yang sudah di-upload? Ini juga akan mengosongkan data di spreadsheet. Tindakan ini tidak bisa dibatalkan."
       : "Hapus semua data yang sudah di-upload? Tindakan ini tidak bisa dibatalkan.";
     if(!confirm(msg)) return;
     monthsData = {}; pendingFiles=[]; selectedProduct=null; dirtyMonths.clear();
-    saveLocalCache(); renderPending(); renderAll();
+    ordersRaw=[]; incomeRaw=[]; mapping={}; skuMap={}; dirtyOrderKeys.clear(); dirtyIncomePlatforms.clear();
+    saveLocalCache(); saveLedgerCache(); renderPending(); renderAll();
     if(SHEET_URL){
       try{
         const res = await apiPost("resetAll", {});
@@ -1249,7 +2210,9 @@ function jsonOutput(obj) {
   });
 
   /* ================= INIT ================= */
+  document.getElementById("orders-month-select").innerHTML = MONTH_ORDER.map(m => `<option value="${m}">${m}</option>`).join("");
   loadLocalCache();
+  loadLedgerCache();
   loadSheetConfig();
   renderAll();
   if(SHEET_URL) syncFromSheet(true);
