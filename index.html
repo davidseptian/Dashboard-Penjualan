@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root{
     --bg: #0a0a0b;
@@ -495,9 +495,10 @@ function jsonOutput(obj) {
     <div class="section-head">
       <div>
         <h2><span class="num">01</span> Upload Data Bulanan</h2>
-        <p>Format CSV: kolom <b>Nama Produk, Qty, Sub Total</b>. Nama file idealnya memuat nama bulan (mis. "...FEB.csv" atau "...JANUARI.csv").</p>
+        <p>Format CSV: kolom <b>Nama Produk, Qty, Sub Total</b>. Nama file idealnya memuat nama bulan (mis. "...FEB.csv" atau "...JANUARI.csv"). Data akan tampil dulu di dashboard — klik <b>"Simpan ke Spreadsheet"</b> kalau sudah yakin mau ditulis permanen.</p>
       </div>
       <div class="toolbar-actions">
+        <button class="btn-gold" id="btn-save-sheet" style="display:none;">Simpan ke Spreadsheet</button>
         <button class="btn-ghost" id="btn-reset">Hapus semua data</button>
       </div>
     </div>
@@ -653,6 +654,7 @@ function jsonOutput(obj) {
   let tableFilter = "";
   let chartTopQty=null, chartTopRev=null, chartExplorer=null;
   let SHEET_URL = "";
+  let dirtyMonths = new Set(); // bulan yang sudah di-upload lokal tapi belum di-tulis ke spreadsheet
 
   /* ================= TOAST ================= */
   function showToast(msg, isErr){
@@ -702,7 +704,10 @@ function jsonOutput(obj) {
     try{
       const res = await apiGet();
       if(res && res.ok){
-        monthsData = res.data || {};
+        const serverData = res.data || {};
+        Object.keys(serverData).forEach(m => {
+          if(!dirtyMonths.has(m)) monthsData[m] = serverData[m];
+        });
         saveLocalCache();
         setSyncStatus("connected", monthsPresent().length);
         renderAll();
@@ -775,26 +780,42 @@ function jsonOutput(obj) {
     });
   }
 
-  async function commitMonth(month, rows){
+  function stageMonth(month, rows){
     monthsData[month] = rows;
+    dirtyMonths.add(month);
     saveLocalCache();
     renderAll();
-    if(SHEET_URL){
-      showToast(`Menyimpan ${month} ke spreadsheet…`);
+  }
+
+  async function saveDirtyMonths(){
+    if(!SHEET_URL){
+      showToast("Sambungkan Google Sheet dulu di bagian atas ya, baru bisa disimpan.", true);
+      return;
+    }
+    const months = Array.from(dirtyMonths);
+    if(!months.length) return;
+    const btn = document.getElementById("btn-save-sheet");
+    btn.disabled = true;
+    btn.textContent = "Menyimpan…";
+    let successCount = 0;
+    for(const month of months){
       try{
-        const res = await apiPost("saveMonth", {month, rows});
+        const res = await apiPost("saveMonth", {month, rows: monthsData[month]});
         if(res && res.ok){
+          dirtyMonths.delete(month);
+          successCount++;
           showToast(`${month} tersimpan ke spreadsheet ✓ (${res.saved} produk)`);
-          setSyncStatus("connected", monthsPresent().length);
         }else{
-          showToast(`Gagal simpan ${month} ke spreadsheet: ${res && res.error}`, true);
-          setSyncStatus("error", res && res.error);
+          showToast(`Gagal simpan ${month}: ${res && res.error}`, true);
         }
       }catch(err){
         showToast(`Gagal konek ke spreadsheet saat simpan ${month}: ${err.message}`, true);
-        setSyncStatus("error", err.message);
       }
     }
+    btn.disabled = false;
+    setSyncStatus(dirtyMonths.size ? "error" : "connected", monthsPresent().length);
+    saveLocalCache();
+    renderAll();
   }
 
   async function handleFiles(fileList){
@@ -804,7 +825,7 @@ function jsonOutput(obj) {
       const rows = await parseFile(file);
       if(!rows.length) continue;
       if(month){
-        await commitMonth(month, rows);
+        stageMonth(month, rows);
       }else{
         pendingFiles.push({file, rows, id: Math.random().toString(36).slice(2)});
       }
@@ -831,7 +852,7 @@ function jsonOutput(obj) {
       wrap.appendChild(row);
     });
     wrap.querySelectorAll("button.confirm").forEach(btn => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", () => {
         const id = btn.dataset.id;
         const sel = wrap.querySelector(`select[data-id="${id}"]`);
         const month = sel.value;
@@ -839,7 +860,7 @@ function jsonOutput(obj) {
         const p = pendingFiles.find(x => x.id === id);
         pendingFiles = pendingFiles.filter(x => x.id !== id);
         renderPending();
-        await commitMonth(month, p.rows);
+        stageMonth(month, p.rows);
       });
     });
   }
@@ -847,16 +868,29 @@ function jsonOutput(obj) {
   function renderChips(){
     const wrap = document.getElementById("month-chips");
     const present = monthsPresent();
-    wrap.innerHTML = present.map(m => `
+    wrap.innerHTML = present.map(m => {
+      const dirty = dirtyMonths.has(m);
+      return `
       <div class="chip">
-        <span class="dot"></span> ${m} <span style="color:var(--text-dim); font-weight:400;">(${monthsData[m].length} produk)</span>
+        <span class="dot" style="background:${dirty ? 'var(--gold)' : 'var(--green)'}"></span> ${m}
+        <span style="color:var(--text-dim); font-weight:400;">(${monthsData[m].length} produk${dirty ? ' · belum disimpan' : ''})</span>
         <button data-month="${m}" title="Hapus bulan ini">✕</button>
-      </div>
-    `).join("");
+      </div>`;
+    }).join("");
+
+    const saveBtn = document.getElementById("btn-save-sheet");
+    if(dirtyMonths.size > 0){
+      saveBtn.style.display = "inline-block";
+      saveBtn.textContent = `Simpan ke Spreadsheet (${dirtyMonths.size} bulan)`;
+    }else{
+      saveBtn.style.display = "none";
+    }
+
     wrap.querySelectorAll("button[data-month]").forEach(btn => {
       btn.addEventListener("click", async () => {
         const month = btn.dataset.month;
         delete monthsData[month];
+        dirtyMonths.delete(month);
         saveLocalCache();
         renderAll();
         if(SHEET_URL){
@@ -1153,12 +1187,14 @@ function jsonOutput(obj) {
   ["dragleave","drop"].forEach(evt => dropzone.addEventListener(evt, (e)=>{ e.preventDefault(); dropzone.classList.remove("drag"); }));
   dropzone.addEventListener("drop", (e)=>{ handleFiles(e.dataTransfer.files); });
 
+  document.getElementById("btn-save-sheet").addEventListener("click", saveDirtyMonths);
+
   document.getElementById("btn-reset").addEventListener("click", async ()=>{
     const msg = SHEET_URL
       ? "Hapus semua data yang sudah di-upload? Ini juga akan mengosongkan data di spreadsheet. Tindakan ini tidak bisa dibatalkan."
       : "Hapus semua data yang sudah di-upload? Tindakan ini tidak bisa dibatalkan.";
     if(!confirm(msg)) return;
-    monthsData = {}; pendingFiles=[]; selectedProduct=null;
+    monthsData = {}; pendingFiles=[]; selectedProduct=null; dirtyMonths.clear();
     saveLocalCache(); renderPending(); renderAll();
     if(SHEET_URL){
       try{
