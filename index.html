@@ -1389,39 +1389,67 @@ function jsonOutput(obj) {
     const rows = safeSheetRows(wb, detection.sheetName);
     const grouped = {};
     if(detection.platform === "SHOPEE"){
-      const headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Status Pesanan","Nama Produk","SKU Induk","Jumlah"]);
+      let headerIdx;
+      try{
+        headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Status Pesanan","Nama Produk","SKU Induk","Jumlah"]);
+      }catch(err){ throw new Error(`findHeaderRowIndex gagal: ${err.message}`); }
       if(headerIdx<0) return null;
-      rowsToObjects(rows, headerIdx).forEach(o=>{
-        if(!o) return;
-        if((o["Status Pesanan"]||"").toString().trim()==="Batal") return;
-        const bulan = excelDateToMonth(o["Waktu Pesanan Dibuat"]) || excelDateToMonth(o["Waktu Pembayaran Dilakukan"]);
-        const noPesanan = (o["No. Pesanan"]||"").toString().trim();
-        const produk = (o["Nama Produk"]||"").toString().trim();
-        if(!bulan || !noPesanan || !produk) return;
-        const sku = (o["SKU Induk"]||"").toString().trim();
-        const qty = parseIndoNumber(o["Jumlah"]);
-        const subtotalKotor = parseIndoMoney(pickField(o, ["Subtotal Pesanan","Total Harga Produk"]));
-        if(!grouped[bulan]) grouped[bulan]=[];
-        grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
-      });
+
+      let objs;
+      try{
+        objs = rowsToObjects(rows, headerIdx);
+      }catch(err){ throw new Error(`rowsToObjects gagal (headerIdx=${headerIdx}): ${err.message}`); }
+
+      for(let idx=0; idx<objs.length; idx++){
+        const o = objs[idx];
+        try{
+          if(!o) continue;
+          if((o["Status Pesanan"]||"").toString().trim()==="Batal") continue;
+          const bulan = excelDateToMonth(o["Waktu Pesanan Dibuat"]) || excelDateToMonth(o["Waktu Pembayaran Dilakukan"]);
+          const noPesanan = (o["No. Pesanan"]||"").toString().trim();
+          const produk = (o["Nama Produk"]||"").toString().trim();
+          if(!bulan || !noPesanan || !produk) continue;
+          const sku = (o["SKU Induk"]||"").toString().trim();
+          const qty = parseIndoNumber(o["Jumlah"]);
+          const subtotalKotor = parseIndoMoney(pickField(o, ["Subtotal Pesanan","Total Harga Produk"]));
+          if(!grouped[bulan]) grouped[bulan]=[];
+          grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
+        }catch(err){
+          throw new Error(`gagal proses baris ke-${idx} (data: ${JSON.stringify(o).slice(0,200)}): ${err.message}`);
+        }
+      }
       return grouped;
     }
     if(detection.platform === "TIKTOK"){
-      const headerIdx = findHeaderRowIndex(rows, ["Order ID","Order Status","Product Name","Seller SKU","Quantity","SKU Subtotal After Discount"]);
+      let headerIdx;
+      try{
+        headerIdx = findHeaderRowIndex(rows, ["Order ID","Order Status","Product Name","Seller SKU","Quantity","SKU Subtotal After Discount"]);
+      }catch(err){ throw new Error(`findHeaderRowIndex gagal: ${err.message}`); }
       if(headerIdx<0) return null;
-      rowsToObjects(rows, headerIdx).forEach(o=>{
-        if(!o) return;
-        if((o["Order Status"]||"").toString().trim()==="Dibatalkan") return;
-        const bulan = excelDateToMonth(o["Created Time"]);
-        const noPesanan = (o["Order ID"]||"").toString().trim();
-        const produk = (o["Product Name"]||"").toString().trim();
-        if(!bulan || !noPesanan || !produk) return;
-        const sku = (o["Seller SKU"]||"").toString().trim();
-        const qty = parseIndoNumber(o["Quantity"]);
-        const subtotalKotor = parseIndoMoney(o["SKU Subtotal After Discount"]);
-        if(!grouped[bulan]) grouped[bulan]=[];
-        grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
-      });
+
+      let objs;
+      try{
+        objs = rowsToObjects(rows, headerIdx);
+      }catch(err){ throw new Error(`rowsToObjects gagal (headerIdx=${headerIdx}): ${err.message}`); }
+
+      for(let idx=0; idx<objs.length; idx++){
+        const o = objs[idx];
+        try{
+          if(!o) continue;
+          if((o["Order Status"]||"").toString().trim()==="Dibatalkan") continue;
+          const bulan = excelDateToMonth(o["Created Time"]);
+          const noPesanan = (o["Order ID"]||"").toString().trim();
+          const produk = (o["Product Name"]||"").toString().trim();
+          if(!bulan || !noPesanan || !produk) continue;
+          const sku = (o["Seller SKU"]||"").toString().trim();
+          const qty = parseIndoNumber(o["Quantity"]);
+          const subtotalKotor = parseIndoMoney(o["SKU Subtotal After Discount"]);
+          if(!grouped[bulan]) grouped[bulan]=[];
+          grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
+        }catch(err){
+          throw new Error(`gagal proses baris ke-${idx} (data: ${JSON.stringify(o).slice(0,200)}): ${err.message}`);
+        }
+      }
       return grouped;
     }
     return null;
