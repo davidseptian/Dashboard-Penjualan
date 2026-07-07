@@ -1408,14 +1408,22 @@ function jsonOutput(obj) {
     if(!file){ return; }
     const name = file.name.toLowerCase();
     if(name.endsWith(".xlsx")){
+      let step = "baca file (arrayBuffer)";
       try{
+        if(typeof XLSX === "undefined"){
+          showToast("Library pembaca Excel (SheetJS) belum kemuat sempurna. Tunggu 2-3 detik lalu coba upload lagi, atau refresh halaman.", true);
+          return;
+        }
         const buf = await file.arrayBuffer();
+        step = "parse workbook (XLSX.read)";
         const wb = XLSX.read(buf, {type:"array", cellDates:true});
+        step = "deteksi platform (detectRawWorkbook)";
         const detection = detectRawWorkbook(wb);
         if(!detection || detection.kind !== "orders"){
           showToast("File ini nggak terdeteksi sebagai file Pesanan mentah yang dikenali (Shopee Order_all / TikTok Semua_pesanan). Kalau ini file Income, upload di section 03 ya.", true);
           return;
         }
+        step = "parsing baris pesanan (parseRawOrders)";
         const grouped = parseRawOrders(wb, detection);
         const bulanList = grouped ? Object.keys(grouped) : [];
         if(!bulanList.length){
@@ -1427,7 +1435,8 @@ function jsonOutput(obj) {
         bulanList.forEach(bulan => { stageOrders(detection.platform, bulan, grouped[bulan]); totalRows += grouped[bulan].length; });
         showToast(`${PLATFORM_LABEL[detection.platform]}: ${totalRows} baris pesanan (${bulanList.join(", ")}) otomatis kebaca dari file mentah ✓ Klik "Simpan Pesanan ke Spreadsheet" kalau sudah yakin.`);
       }catch(err){
-        showToast(`Gagal baca file xlsx: ${err.message}`, true);
+        showToast(`Gagal baca file xlsx saat tahap "${step}": ${err.message}`, true);
+        console.error("handleOrdersFile error at step:", step, err);
       }
       return;
     }
@@ -1502,14 +1511,22 @@ function jsonOutput(obj) {
     if(!file){ return; }
     const name = file.name.toLowerCase();
     if(name.endsWith(".xlsx")){
+      let step = "baca file (arrayBuffer)";
       try{
+        if(typeof XLSX === "undefined"){
+          showToast("Library pembaca Excel (SheetJS) belum kemuat sempurna. Tunggu 2-3 detik lalu coba upload lagi, atau refresh halaman.", true);
+          return;
+        }
         const buf = await file.arrayBuffer();
+        step = "parse workbook (XLSX.read)";
         const wb = XLSX.read(buf, {type:"array", cellDates:true});
+        step = "deteksi platform (detectRawWorkbook)";
         const detection = detectRawWorkbook(wb);
         if(!detection || detection.kind !== "income"){
           showToast("File ini nggak terdeteksi sebagai file Income mentah yang dikenali. Kalau ini file Pesanan, upload di section 02 ya.", true);
           return;
         }
+        step = "parsing baris income (parseRawIncome)";
         const rows = parseRawIncome(wb, detection);
         if(!rows || !rows.length){
           showToast("Nggak ada baris valid kebaca dari file mentah ini.", true);
@@ -1519,7 +1536,8 @@ function jsonOutput(obj) {
         stageIncome(detection.platform, rows);
         showToast(`${PLATFORM_LABEL[detection.platform]}: ${rows.length} baris income otomatis kebaca dari file mentah ✓ Klik "Simpan Income ke Spreadsheet" kalau sudah yakin.`);
       }catch(err){
-        showToast(`Gagal baca file xlsx: ${err.message}`, true);
+        showToast(`Gagal baca file xlsx saat tahap "${step}": ${err.message}`, true);
+        console.error("handleIncomeFile error at step:", step, err);
       }
       return;
     }
