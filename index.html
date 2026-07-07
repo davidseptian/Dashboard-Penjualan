@@ -1339,9 +1339,52 @@ function jsonOutput(obj) {
   function safeSheetRows(wb, sheetName){
     const ws = wb && wb.Sheets ? wb.Sheets[sheetName] : null;
     if(!ws) throw new Error(`Sheet "${sheetName}" tidak ditemukan di file ini`);
-    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null}) || [];
-    return rows;
+    let rows;
+    try{
+      rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    }catch(err){
+      throw new Error(`sheet_to_json gagal (range: ${ws['!ref']||'tidak ada'}): ${err.message}`);
+    }
+    return rows || [];
   }
+
+  // Baca file xlsx dengan 3 lapis fallback: kadang satu metode baca gagal
+  // untuk file tertentu di browser tertentu meski file-nya valid.
+  function readFileAsBinaryString(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = () => reject(new Error("FileReader gagal baca file (binary string)"));
+      reader.readAsBinaryString(file);
+    });
+  }
+  function readFileAsArrayBufferViaReader(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = () => reject(new Error("FileReader gagal baca file (array buffer)"));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+  async function readWorkbookRobust(file){
+    const attempts = [
+      async () => { const buf = await file.arrayBuffer(); return XLSX.read(buf, {type:"array", cellDates:true}); },
+      async () => { const buf = await readFileAsArrayBufferViaReader(file); return XLSX.read(buf, {type:"array", cellDates:true}); },
+      async () => { const bin = await readFileAsBinaryString(file); return XLSX.read(bin, {type:"binary", cellDates:true}); }
+    ];
+    let lastErr = null;
+    for(const attempt of attempts){
+      try{
+        const wb = await attempt();
+        if(wb && wb.SheetNames && wb.SheetNames.length) return wb;
+        lastErr = new Error("Workbook kebaca tapi kosong (tidak ada sheet)");
+      }catch(err){
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error("Semua metode baca file gagal");
+  }
+
   function parseRawOrders(wb, detection){
     const rows = safeSheetRows(wb, detection.sheetName);
     const grouped = {};
@@ -1408,15 +1451,13 @@ function jsonOutput(obj) {
     if(!file){ return; }
     const name = file.name.toLowerCase();
     if(name.endsWith(".xlsx")){
-      let step = "baca file (arrayBuffer)";
+      let step = "baca file (readWorkbookRobust)";
       try{
         if(typeof XLSX === "undefined"){
           showToast("Library pembaca Excel (SheetJS) belum kemuat sempurna. Tunggu 2-3 detik lalu coba upload lagi, atau refresh halaman.", true);
           return;
         }
-        const buf = await file.arrayBuffer();
-        step = "parse workbook (XLSX.read)";
-        const wb = XLSX.read(buf, {type:"array", cellDates:true});
+        const wb = await readWorkbookRobust(file);
         step = "deteksi platform (detectRawWorkbook)";
         const detection = detectRawWorkbook(wb);
         if(!detection || detection.kind !== "orders"){
@@ -1511,15 +1552,13 @@ function jsonOutput(obj) {
     if(!file){ return; }
     const name = file.name.toLowerCase();
     if(name.endsWith(".xlsx")){
-      let step = "baca file (arrayBuffer)";
+      let step = "baca file (readWorkbookRobust)";
       try{
         if(typeof XLSX === "undefined"){
           showToast("Library pembaca Excel (SheetJS) belum kemuat sempurna. Tunggu 2-3 detik lalu coba upload lagi, atau refresh halaman.", true);
           return;
         }
-        const buf = await file.arrayBuffer();
-        step = "parse workbook (XLSX.read)";
-        const wb = XLSX.read(buf, {type:"array", cellDates:true});
+        const wb = await readWorkbookRobust(file);
         step = "deteksi platform (detectRawWorkbook)";
         const detection = detectRawWorkbook(wb);
         if(!detection || detection.kind !== "income"){
@@ -2034,8 +2073,7 @@ function jsonOutput(obj) {
     let rows = [];
     if(name.endsWith(".xlsx")){
       try{
-        const buf = await file.arrayBuffer();
-        const wb = XLSX.read(buf, {type:"array"});
+        const wb = await readWorkbookRobust(file);
         const sheetName = wb.SheetNames.find(n => n.toLowerCase()==="mapping") || wb.SheetNames[0];
         const ws = wb.Sheets[sheetName];
         const arr = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
