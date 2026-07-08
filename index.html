@@ -88,6 +88,52 @@
 
   main{padding: 0 6vw 90px;}
   section{padding: 40px 0;}
+
+  /* ---------- app shell: sidebar + content ---------- */
+  .app-shell{
+    display:flex;
+    align-items:flex-start;
+  }
+  .sidebar{
+    width:240px;
+    flex-shrink:0;
+    position:sticky;
+    top:0;
+    height:100vh;
+    overflow-y:auto;
+    background:var(--bg-elevated);
+    border-right:1px solid var(--border-soft);
+    padding:28px 14px;
+  }
+  .sidebar-nav{display:flex; flex-direction:column; gap:4px;}
+  .nav-item{
+    all:unset;
+    display:flex; align-items:center; gap:12px;
+    padding:12px 16px;
+    border-radius:10px;
+    font-family:var(--font-display); font-weight:600; font-size:14px;
+    color:var(--text-muted);
+    cursor:pointer;
+    transition: background .15s ease, color .15s ease;
+  }
+  .nav-item:hover{background:var(--bg-card-hover); color:var(--text);}
+  .nav-item.active{background:var(--gold-dim); color:var(--gold-bright);}
+  .nav-icon{font-size:16px; width:20px; text-align:center;}
+
+  .app-shell main{flex:1; min-width:0; padding: 0 4vw 90px;}
+  .page{display:none;}
+  .page.active{display:block;}
+
+  @media (max-width: 900px){
+    .app-shell{flex-direction:column;}
+    .sidebar{
+      width:100%; height:auto; position:static; border-right:none;
+      border-bottom:1px solid var(--border-soft); padding:14px 5vw;
+    }
+    .sidebar-nav{flex-direction:row; overflow-x:auto; gap:8px;}
+    .nav-item{white-space:nowrap; padding:10px 14px;}
+    .app-shell main{padding: 0 5vw 90px;}
+  }
   .section-head{
     display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap;
     margin-bottom:22px;
@@ -393,13 +439,33 @@
 <header>
   <div class="eyebrow">Hypospot Shoes Care · Sales Intelligence</div>
   <h1>Dashboard Penjualan per Produk</h1>
-  <p class="sub">Upload file CSV tarikan ERP tiap bulan — Top produk, tren tiap produk, dan tabel lengkap otomatis ter-generate di bawah ini.</p>
+  <p class="sub">Kelola data Pesanan, Income, dan Pemetaan Produk, lalu pantau performa penjualan — semua dalam satu tempat.</p>
 </header>
 
 <div class="stitch"></div>
 
+<div class="app-shell">
+  <aside class="sidebar">
+    <nav class="sidebar-nav">
+      <button class="nav-item" data-page="dashboard">
+        <span class="nav-icon">📊</span> Dashboard
+      </button>
+      <button class="nav-item" data-page="orders">
+        <span class="nav-icon">📦</span> Orders & Income
+      </button>
+      <button class="nav-item" data-page="mapping">
+        <span class="nav-icon">🔗</span> Pemetaan Produk
+      </button>
+      <button class="nav-item" data-page="settings">
+        <span class="nav-icon">⚙️</span> Pengaturan
+      </button>
+    </nav>
+  </aside>
+
 <main>
 
+  <!-- ============ PAGE: SETTINGS ============ -->
+  <div class="page" data-page="settings">
   <!-- ============ CONNECT SHEET ============ -->
   <section id="connect-section">
     <div class="section-head">
@@ -670,6 +736,9 @@ function jsonOutput(obj) {
 
   <div class="stitch tight"></div>
 
+  </div>
+  <!-- ============ PAGE: ORDERS & INCOME ============ -->
+  <div class="page" data-page="orders">
   <!-- ============ UPLOAD ============ -->
   <section id="upload-section">
     <div class="section-head">
@@ -757,6 +826,9 @@ function jsonOutput(obj) {
 
   <div class="stitch tight"></div>
 
+  </div>
+  <!-- ============ PAGE: PEMETAAN PRODUK ============ -->
+  <div class="page" data-page="mapping">
   <!-- ============ PEMETAAN PRODUK ============ -->
   <section id="mapping-section">
     <div class="section-head">
@@ -796,6 +868,9 @@ function jsonOutput(obj) {
 
   <div class="stitch tight"></div>
 
+  </div>
+  <!-- ============ PAGE: DASHBOARD ============ -->
+  <div class="page" data-page="dashboard">
   <!-- ============ EMPTY STATE ============ -->
   <div class="empty" id="empty-state">
     Belum ada data. <b>Upload file CSV</b> di atas untuk melihat dashboard.
@@ -901,7 +976,13 @@ function jsonOutput(obj) {
 
   </div>
 
+  </div>
+  <!-- /page dashboard -->
+
 </main>
+
+</div>
+<!-- /app-shell -->
 
 <footer>Hypospot Shoes Care — Dashboard Penjualan · dibuat untuk pemakaian internal</footer>
 
@@ -2442,12 +2523,33 @@ function jsonOutput(obj) {
     }, 180);
   });
 
+  /* ================= NAVIGASI SIDEBAR (multi-page) ================= */
+  const PAGE_STORAGE_KEY = "hypospot_active_page";
+  function showPage(name){
+    document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.dataset.page === name));
+    document.querySelectorAll(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.page === name));
+    try{ localStorage.setItem(PAGE_STORAGE_KEY, name); }catch(e){}
+    window.scrollTo({top:0, behavior:"instant"});
+  }
+  document.querySelectorAll(".nav-item").forEach(btn => {
+    btn.addEventListener("click", () => showPage(btn.dataset.page));
+  });
+
   /* ================= INIT ================= */
   document.getElementById("orders-month-select").innerHTML = MONTH_ORDER.map(m => `<option value="${m}">${m}</option>`).join("");
   loadLocalCache();
   loadLedgerCache();
   loadSheetConfig();
   renderAll();
+  {
+    let initialPage = "dashboard";
+    try{
+      const saved = localStorage.getItem(PAGE_STORAGE_KEY);
+      if(saved) initialPage = saved;
+      else if(!SHEET_URL) initialPage = "settings";
+    }catch(e){}
+    showPage(initialPage);
+  }
   if(SHEET_URL) syncFromSheet(true);
   else setSyncStatus("disconnected");
 })();
