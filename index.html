@@ -458,19 +458,33 @@ function getOrCreateSheet(name, headers) {
     sheet = ss.insertSheet(name);
     sheet.appendRow(headers);
     sheet.setFrozenRows(1);
+    return sheet;
+  }
+  // Auto-migrasi: kalau skema baru punya lebih banyak kolom dari header yang ada
+  // di sheet (mis. nambah fitur baru), perlebar header row-nya otomatis.
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  if (currentHeaders.length < headers.length) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   }
   return sheet;
 }
 
-function replaceRowsWhere(sheet, matchFn, newRows) {
+function replaceRowsWhere(sheet, matchFn, newRows, width) {
   const values = sheet.getDataRange().getValues();
-  const keep = [values[0]];
-  for (let i = 1; i < values.length; i++) {
-    if (!matchFn(values[i])) keep.push(values[i]);
+  const targetWidth = width || values[0].length;
+  function pad(row) {
+    const r = row.slice(0, targetWidth);
+    while (r.length < targetWidth) r.push("");
+    return r;
   }
-  newRows.forEach(function (r) { keep.push(r); });
+  const keep = [pad(values[0])];
+  for (let i = 1; i < values.length; i++) {
+    if (!matchFn(values[i])) keep.push(pad(values[i]));
+  }
+  newRows.forEach(function (r) { keep.push(pad(r)); });
   sheet.clearContents();
-  sheet.getRange(1, 1, keep.length, values[0].length).setValues(keep);
+  sheet.getRange(1, 1, keep.length, targetWidth).setValues(keep);
 }
 
 function doGet(e) {
@@ -557,13 +571,13 @@ function doPost(e) {
       const rows = (body.rows || []).map(function (r) {
         return [month, r.produk, r.qty, r.revenue, now];
       });
-      replaceRowsWhere(sheet, function (row) { return row[0] === month; }, rows);
+      replaceRowsWhere(sheet, function (row) { return row[0] === month; }, rows, HEADERS_LEGACY.length);
       return jsonOutput({ ok: true, saved: rows.length });
     }
 
     if (action === "deleteMonth") {
       const sheet = getOrCreateSheet(SHEET_LEGACY, HEADERS_LEGACY);
-      replaceRowsWhere(sheet, function (row) { return row[0] === body.month; }, []);
+      replaceRowsWhere(sheet, function (row) { return row[0] === body.month; }, [], HEADERS_LEGACY.length);
       return jsonOutput({ ok: true });
     }
 
@@ -573,13 +587,13 @@ function doPost(e) {
       const rows = (body.rows || []).map(function (r) {
         return [platform, month, r.noPesanan, r.produk, r.qty, r.subtotalKotor, now, r.sku || "", r.variasi || ""];
       });
-      replaceRowsWhere(sheet, function (row) { return row[0] === platform && row[1] === month; }, rows);
+      replaceRowsWhere(sheet, function (row) { return row[0] === platform && row[1] === month; }, rows, HEADERS_ORDERS.length);
       return jsonOutput({ ok: true, saved: rows.length });
     }
 
     if (action === "deleteOrders") {
       const sheet = getOrCreateSheet(SHEET_ORDERS, HEADERS_ORDERS);
-      replaceRowsWhere(sheet, function (row) { return row[0] === body.platform && row[1] === body.month; }, []);
+      replaceRowsWhere(sheet, function (row) { return row[0] === body.platform && row[1] === body.month; }, [], HEADERS_ORDERS.length);
       return jsonOutput({ ok: true });
     }
 
@@ -593,13 +607,13 @@ function doPost(e) {
       });
       replaceRowsWhere(sheet, function (row) {
         return row[0] === platform && newIds[row[1]];
-      }, rows);
+      }, rows, HEADERS_INCOME.length);
       return jsonOutput({ ok: true, saved: rows.length });
     }
 
     if (action === "deleteIncome") {
       const sheet = getOrCreateSheet(SHEET_INCOME, HEADERS_INCOME);
-      replaceRowsWhere(sheet, function (row) { return row[0] === body.platform; }, []);
+      replaceRowsWhere(sheet, function (row) { return row[0] === body.platform; }, [], HEADERS_INCOME.length);
       return jsonOutput({ ok: true });
     }
 
@@ -608,7 +622,7 @@ function doPost(e) {
       const platform = body.platform, original = body.original, master = body.master;
       replaceRowsWhere(sheet, function (row) {
         return row[0] === platform && row[1] === original;
-      }, [[platform, original, master]]);
+      }, [[platform, original, master]], HEADERS_MAPPING.length);
       return jsonOutput({ ok: true });
     }
 
@@ -616,7 +630,7 @@ function doPost(e) {
       const sheet = getOrCreateSheet(SHEET_MAPPING, HEADERS_MAPPING);
       replaceRowsWhere(sheet, function (row) {
         return row[0] === body.platform && row[1] === body.original;
-      }, []);
+      }, [], HEADERS_MAPPING.length);
       return jsonOutput({ ok: true });
     }
 
