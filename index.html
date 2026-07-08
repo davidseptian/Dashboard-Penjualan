@@ -874,6 +874,7 @@ function jsonOutput(obj) {
       <div class="table-toolbar">
         <input type="text" id="table-search" placeholder="Cari produk di tabel…">
         <span style="color:var(--text-dim); font-size:12.5px;" id="table-count"></span>
+        <button class="btn-gold secondary" id="btn-export-table" style="margin-left:auto;">⬇ Download Excel</button>
       </div>
       <div class="table-scroll">
         <table class="full" id="full-table">
@@ -1962,6 +1963,27 @@ function jsonOutput(obj) {
   }
 
   /* ================= RENDER: FULL TABLE ================= */
+  function getSortedFilteredNames(productMap){
+    let names = Object.keys(productMap);
+    if(tableFilter){
+      const q = tableFilter.toLowerCase();
+      names = names.filter(n => n.toLowerCase().includes(q));
+    }
+    names.sort((a,b)=>{
+      const A=productMap[a], B=productMap[b];
+      let va, vb;
+      if(sortState.key === "produk"){ va=a.toLowerCase(); vb=b.toLowerCase(); }
+      else if(sortState.key === "total_qty"){ va=A.totalQty; vb=B.totalQty; }
+      else if(sortState.key === "total_revenue"){ va=A.totalRev; vb=B.totalRev; }
+      else if(sortState.key.startsWith("qty_")){ const m=sortState.key.slice(4); va=A.qty[m]||0; vb=B.qty[m]||0; }
+      else if(sortState.key.startsWith("rev_")){ const m=sortState.key.slice(4); va=A.rev[m]||0; vb=B.rev[m]||0; }
+      else { va=0; vb=0; }
+      if(typeof va === "string") return sortState.dir==="asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      return sortState.dir==="asc" ? va-vb : vb-va;
+    });
+    return names;
+  }
+
   function renderFullTable(productMap, present){
     const thead = document.querySelector("#full-table thead");
     const tbody = document.querySelector("#full-table tbody");
@@ -1983,23 +2005,7 @@ function jsonOutput(obj) {
       });
     });
 
-    let names = Object.keys(productMap);
-    if(tableFilter){
-      const q = tableFilter.toLowerCase();
-      names = names.filter(n => n.toLowerCase().includes(q));
-    }
-    names.sort((a,b)=>{
-      const A=productMap[a], B=productMap[b];
-      let va, vb;
-      if(sortState.key === "produk"){ va=a.toLowerCase(); vb=b.toLowerCase(); }
-      else if(sortState.key === "total_qty"){ va=A.totalQty; vb=B.totalQty; }
-      else if(sortState.key === "total_revenue"){ va=A.totalRev; vb=B.totalRev; }
-      else if(sortState.key.startsWith("qty_")){ const m=sortState.key.slice(4); va=A.qty[m]||0; vb=B.qty[m]||0; }
-      else if(sortState.key.startsWith("rev_")){ const m=sortState.key.slice(4); va=A.rev[m]||0; vb=B.rev[m]||0; }
-      else { va=0; vb=0; }
-      if(typeof va === "string") return sortState.dir==="asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-      return sortState.dir==="asc" ? va-vb : vb-va;
-    });
+    const names = getSortedFilteredNames(productMap);
 
     document.getElementById("table-count").textContent = `${names.length} produk`;
 
@@ -2022,6 +2028,54 @@ function jsonOutput(obj) {
   function arrowFor(key){
     if(sortState.key !== key) return "";
     return sortState.dir === "desc" ? "▼" : "▲";
+  }
+
+  /* ================= EXPORT: Tabel Semua Produk ke Excel ================= */
+  function exportTableToExcel(){
+    if(typeof XLSX === "undefined"){
+      showToast("Library Excel belum kemuat sempurna. Tunggu sebentar lalu coba lagi.", true);
+      return;
+    }
+    const productMap = buildProductMap();
+    const present = monthsPresent();
+    const names = getSortedFilteredNames(productMap);
+    if(!names.length){
+      showToast("Nggak ada data buat di-download.", true);
+      return;
+    }
+
+    const aoa = [];
+    const row1 = ["Nama Produk"];
+    present.forEach(m => { row1.push(m); row1.push(""); });
+    row1.push("TOTAL"); row1.push("");
+    aoa.push(row1);
+
+    const row2 = [""];
+    present.forEach(() => { row2.push("Qty"); row2.push("Revenue"); });
+    row2.push("Qty"); row2.push("Revenue");
+    aoa.push(row2);
+
+    names.forEach(name => {
+      const info = productMap[name];
+      const row = [name];
+      present.forEach(m => { row.push(info.qty[m]||0); row.push(Math.round(info.rev[m]||0)); });
+      row.push(info.totalQty); row.push(Math.round(info.totalRev));
+      aoa.push(row);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const merges = [{ s:{r:0,c:0}, e:{r:1,c:0} }];
+    let col = 1;
+    present.forEach(() => { merges.push({ s:{r:0,c:col}, e:{r:0,c:col+1} }); col += 2; });
+    merges.push({ s:{r:0,c:col}, e:{r:0,c:col+1} });
+    ws['!merges'] = merges;
+    ws['!cols'] = [{wch:38}].concat(present.flatMap(()=>[{wch:9},{wch:15}])).concat([{wch:9},{wch:15}]);
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Tabel Semua Produk");
+    const filename = `Tabel_Semua_Produk_Hypospot_${new Date().toISOString().slice(0,10)}.xlsx`;
+    XLSX.writeFile(wb, filename);
+    showToast(`Excel berhasil di-download: ${filename}`);
   }
 
   /* ================= MASTER RENDER ================= */
@@ -2267,6 +2321,8 @@ function jsonOutput(obj) {
   ["dragenter","dragover"].forEach(evt => dropzone.addEventListener(evt, (e)=>{ e.preventDefault(); dropzone.classList.add("drag"); }));
   ["dragleave","drop"].forEach(evt => dropzone.addEventListener(evt, (e)=>{ e.preventDefault(); dropzone.classList.remove("drag"); }));
   dropzone.addEventListener("drop", (e)=>{ handleFiles(e.dataTransfer.files); });
+
+  document.getElementById("btn-export-table").addEventListener("click", exportTableToExcel);
 
   document.getElementById("btn-save-sheet").addEventListener("click", saveDirtyMonths);
 
