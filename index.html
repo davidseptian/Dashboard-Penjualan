@@ -440,7 +440,7 @@ const SHEET_LEGACY = "RawData";
 const HEADERS_LEGACY = ["Bulan", "Nama Produk", "Qty", "Revenue", "Waktu Upload"];
 
 const SHEET_ORDERS = "Orders";
-const HEADERS_ORDERS = ["Platform", "Bulan", "No. Pesanan", "Nama Produk", "Qty", "Subtotal Kotor", "Waktu Upload", "SKU"];
+const HEADERS_ORDERS = ["Platform", "Bulan", "No. Pesanan", "Nama Produk", "Qty", "Subtotal Kotor", "Waktu Upload", "SKU", "Variasi"];
 
 const SHEET_INCOME = "Income";
 const HEADERS_INCOME = ["Platform", "No. Pesanan", "Total Penghasilan", "Waktu Upload"];
@@ -502,7 +502,8 @@ function doGet(e) {
       produk: row[3].toString(),
       qty: Number(row[4]) || 0,
       subtotalKotor: Number(row[5]) || 0,
-      sku: row[7] ? row[7].toString() : ""
+      sku: row[7] ? row[7].toString() : "",
+      variasi: row[8] ? row[8].toString() : ""
     });
   }
 
@@ -570,7 +571,7 @@ function doPost(e) {
       const sheet = getOrCreateSheet(SHEET_ORDERS, HEADERS_ORDERS);
       const platform = body.platform, month = body.month;
       const rows = (body.rows || []).map(function (r) {
-        return [platform, month, r.noPesanan, r.produk, r.qty, r.subtotalKotor, now, r.sku || ""];
+        return [platform, month, r.noPesanan, r.produk, r.qty, r.subtotalKotor, now, r.sku || "", r.variasi || ""];
       });
       replaceRowsWhere(sheet, function (row) { return row[0] === platform && row[1] === month; }, rows);
       return jsonOutput({ ok: true, saved: rows.length });
@@ -1074,9 +1075,11 @@ function jsonOutput(obj) {
   }
 
   /* ================= LEDGER: matching pesanan + income + mapping ================= */
-  function canonicalName(platform, produk, sku){
+  function canonicalName(platform, produk, sku, variasi){
     if(sku && skuMap[sku]) return skuMap[sku];
-    return mapping[platform+"|||"+produk] || produk;
+    const fallbackKey = platform+"|||"+(sku || (produk+"|||"+variasi));
+    if(mapping[fallbackKey]) return mapping[fallbackKey];
+    return variasi ? `${produk} - ${variasi}` : produk;
   }
 
   // Hasil: { months: {BULAN:[{produk,qty,revenue}]}, pendingByMonth: {BULAN: totalRp}, pendingTotal: totalRp, pendingCount: n }
@@ -1102,7 +1105,7 @@ function jsonOutput(obj) {
       const orderKey = r.platform+"|||"+r.noPesanan;
       const net = incomeMap[orderKey];
       const gross = orderGross[orderKey] || 0;
-      const produkFinal = canonicalName(r.platform, r.produk, r.sku);
+      const produkFinal = canonicalName(r.platform, r.produk, r.sku, r.variasi);
       if(!months[r.bulan]) months[r.bulan] = {};
       if(!months[r.bulan][produkFinal]) months[r.bulan][produkFinal] = {qty:0, revenue:0};
 
@@ -1253,7 +1256,7 @@ function jsonOutput(obj) {
   function stageOrders(platform, bulan, rows){
     const key = platform+"|||"+bulan;
     ordersRaw = ordersRaw.filter(r => (r.platform+"|||"+r.bulan) !== key);
-    rows.forEach(r => ordersRaw.push({platform, bulan, noPesanan:r.noPesanan, produk:r.produk, sku:r.sku||"", qty:r.qty, subtotalKotor:r.subtotalKotor}));
+    rows.forEach(r => ordersRaw.push({platform, bulan, noPesanan:r.noPesanan, produk:r.produk, sku:r.sku||"", variasi:r.variasi||"", qty:r.qty, subtotalKotor:r.subtotalKotor}));
     dirtyOrderKeys.add(key);
     saveLedgerCache();
     renderAll();
@@ -1393,7 +1396,7 @@ function jsonOutput(obj) {
     if(detection.platform === "SHOPEE"){
       let headerIdx;
       try{
-        headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Status Pesanan","Nama Produk","SKU Induk","Jumlah"]);
+        headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Status Pesanan","Nama Produk","Jumlah"]);
       }catch(err){ throw new Error(`findHeaderRowIndex gagal: ${err.message}`); }
       if(headerIdx<0) return null;
 
@@ -1411,11 +1414,12 @@ function jsonOutput(obj) {
           const noPesanan = (o["No. Pesanan"]||"").toString().trim();
           const produk = (o["Nama Produk"]||"").toString().trim();
           if(!bulan || !noPesanan || !produk) continue;
-          const sku = (o["SKU Induk"]||"").toString().trim();
+          const sku = (pickField(o, ["Nomor Referensi SKU","SKU Induk"])||"").toString().trim();
+          const variasi = (o["Nama Variasi"]||"").toString().trim();
           const qty = parseIndoNumber(o["Jumlah"]);
           const subtotalKotor = parseIndoMoney(pickField(o, ["Subtotal Pesanan","Total Harga Produk"]));
           if(!grouped[bulan]) grouped[bulan]=[];
-          grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
+          grouped[bulan].push({noPesanan, produk, sku, variasi, qty, subtotalKotor});
         }catch(err){
           throw new Error(`gagal proses baris ke-${idx} (data: ${JSON.stringify(o).slice(0,200)}): ${err.message}`);
         }
@@ -1444,10 +1448,11 @@ function jsonOutput(obj) {
           const produk = (o["Product Name"]||"").toString().trim();
           if(!bulan || !noPesanan || !produk) continue;
           const sku = (o["Seller SKU"]||"").toString().trim();
+          const variasi = (o["Variation"]||"").toString().trim();
           const qty = parseIndoNumber(o["Quantity"]);
           const subtotalKotor = parseIndoMoney(o["SKU Subtotal After Discount"]);
           if(!grouped[bulan]) grouped[bulan]=[];
-          grouped[bulan].push({noPesanan, produk, sku, qty, subtotalKotor});
+          grouped[bulan].push({noPesanan, produk, sku, variasi, qty, subtotalKotor});
         }catch(err){
           throw new Error(`gagal proses baris ke-${idx} (data: ${JSON.stringify(o).slice(0,200)}): ${err.message}`);
         }
@@ -2214,10 +2219,13 @@ function jsonOutput(obj) {
     const unmapped = [];
     ordersRaw.forEach(r => {
       if(r.sku && skuMap[r.sku]) return; // sudah resolve lewat Master Mapping SKU, skip
-      const key = r.platform+"|||"+r.produk;
+      const identityKey = r.sku || (r.produk+"|||"+r.variasi);
+      const key = r.platform+"|||"+identityKey;
       if(seen.has(key)) return;
       seen.add(key);
-      if(!mapping[key]) unmapped.push({platform:r.platform, original:r.produk});
+      if(!mapping[key]){
+        unmapped.push({platform:r.platform, sku:r.sku||"", original:r.produk, variasi:r.variasi||"", identityKey});
+      }
     });
 
     const skuStatus = document.getElementById("skumap-status");
@@ -2231,21 +2239,23 @@ function jsonOutput(obj) {
       unmappedEmpty.style.display = "block";
     }else{
       unmappedEmpty.style.display = "none";
-      unmappedBody.innerHTML = unmapped.map((u,i) => `
+      unmappedBody.innerHTML = unmapped.map((u,i) => {
+        const suggested = u.variasi ? `${u.original} - ${u.variasi}` : u.original;
+        return `
         <tr>
-          <td><span class="platform-chip ${u.platform.toLowerCase()}">${PLATFORM_LABEL[u.platform]}</span></td>
-          <td>${u.original}</td>
-          <td><input type="text" data-idx="${i}" placeholder="Nama master…" value="${u.original}"></td>
+          <td><span class="platform-chip ${u.platform.toLowerCase()}">${PLATFORM_LABEL[u.platform]}</span>${u.sku ? `<div style="color:var(--text-dim); font-family:var(--font-mono); font-size:10.5px; margin-top:4px;">SKU: ${u.sku}</div>` : ''}</td>
+          <td>${u.original}${u.variasi ? `<div style="color:var(--text-dim); font-size:11.5px; margin-top:3px;">Variasi: ${u.variasi}</div>` : ''}</td>
+          <td><input type="text" data-idx="${i}" placeholder="Nama master…" value="${suggested}"></td>
           <td><button class="btn-small save" data-idx="${i}">Simpan</button></td>
-        </tr>
-      `).join("");
+        </tr>`;
+      }).join("");
       unmappedBody.querySelectorAll("button.save").forEach(btn => {
         btn.addEventListener("click", () => {
           const idx = btn.dataset.idx;
           const input = unmappedBody.querySelector(`input[data-idx="${idx}"]`);
           const u = unmapped[idx];
           const master = input.value.trim() || u.original;
-          saveMappingRow(u.platform, u.original, master);
+          saveMappingRow(u.platform, u.identityKey, master);
         });
       });
     }
@@ -2259,13 +2269,16 @@ function jsonOutput(obj) {
     }else{
       existingEmpty.style.display = "none";
       existingBody.innerHTML = existingKeys.map(key => {
-        const [platform, original] = key.split("|||");
+        const parts = key.split("|||");
+        const platform = parts[0];
+        const identityKey = parts.slice(1).join("|||");
+        const displayOriginal = parts.length >= 3 ? `${parts[1]}${parts[2] ? ` (${parts[2]})` : ''}` : parts[1];
         return `
         <tr>
           <td><span class="platform-chip ${platform.toLowerCase()}">${PLATFORM_LABEL[platform]||platform}</span></td>
-          <td>${original}</td>
+          <td>${displayOriginal}</td>
           <td>${mapping[key]}</td>
-          <td><button class="btn-small remove" data-platform="${platform}" data-original="${encodeURIComponent(original)}">Hapus</button></td>
+          <td><button class="btn-small remove" data-platform="${platform}" data-original="${encodeURIComponent(identityKey)}">Hapus</button></td>
         </tr>`;
       }).join("");
       existingBody.querySelectorAll("button.remove").forEach(btn => {
