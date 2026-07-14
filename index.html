@@ -320,6 +320,15 @@
   table.full tbody td.total{color:var(--gold-bright); font-weight:700;}
   td.laba-missing{color:var(--text-dim); font-style:italic;}
   tr.laba-missing-row td{opacity:.6;}
+
+  .status-filter{display:flex; gap:8px; margin-bottom:10px;}
+  .status-filter-btn{
+    font-family:var(--font-display); font-size:12.5px; font-weight:700;
+    background:var(--bg-elevated); color:var(--text-muted); border:1px solid var(--border);
+    padding:8px 16px; border-radius:999px; cursor:pointer; transition:all .15s ease;
+  }
+  .status-filter-btn:hover{border-color:var(--gold); color:var(--text);}
+  .status-filter-btn.active{background:var(--gold); color:#161608; border-color:var(--gold);}
   .sort-arrow{font-size:9px; margin-left:3px; opacity:.7;}
 
   /* ---------- sheet connection panel ---------- */
@@ -987,6 +996,12 @@ function jsonOutput(obj) {
       <div class="section-head">
         <div><h2><span class="num">08</span> Tabel Semua Produk</h2><p>Qty & Revenue tiap produk, tiap bulan. Klik header untuk sort, klik baris untuk lihat tren.</p></div>
       </div>
+      <div class="status-filter" id="table-status-filter">
+        <button class="status-filter-btn active" data-mode="all">Semua</button>
+        <button class="status-filter-btn" data-mode="close">✓ Sudah Close</button>
+        <button class="status-filter-btn" data-mode="pending">⏳ Masih Pending</button>
+      </div>
+      <p id="table-status-note" style="color:var(--text-dim); font-size:12px; margin:-6px 0 16px;"></p>
       <div class="table-toolbar">
         <input type="text" id="table-search" placeholder="Cari produk di tabel…">
         <span style="color:var(--text-dim); font-size:12.5px;" id="table-count"></span>
@@ -1088,6 +1103,7 @@ function jsonOutput(obj) {
   let selectedProduct = null;
   let sortState = {key:"total_revenue", dir:"desc"};
   let tableFilter = "";
+  let tableStatusFilter = "all"; // "all" | "close" | "pending"
   let chartTopQty=null, chartTopRev=null, chartExplorer=null;
   let SHEET_URL = "";
   let dirtyMonths = new Set(); // bulan yang sudah di-upload lokal tapi belum di-tulis ke spreadsheet
@@ -1366,6 +1382,7 @@ function jsonOutput(obj) {
     const months = {};
     let pendingTotal = 0, pendingCount = 0;
     const pendingByMonth = {};
+    const pendingByProductMonth = {}; // {bulan: {produk: {amount, orderIds:Set}}}
     const pendingOrderIds = new Set();
 
     ordersRaw.forEach(r => {
@@ -1374,16 +1391,25 @@ function jsonOutput(obj) {
       const gross = orderGross[orderKey] || 0;
       const produkFinal = canonicalName(r.platform, r.produk, r.sku, r.variasi);
       if(!months[r.bulan]) months[r.bulan] = {};
-      if(!months[r.bulan][produkFinal]) months[r.bulan][produkFinal] = {qty:0, revenue:0};
+      if(!months[r.bulan][produkFinal]) months[r.bulan][produkFinal] = {qty:0, revenue:0, qtyClose:0, revClose:0, qtyPending:0, grossPending:0};
 
       months[r.bulan][produkFinal].qty += (r.qty||0);
 
       if(net !== undefined && gross > 0){
-        months[r.bulan][produkFinal].revenue += net * ((r.subtotalKotor||0) / gross);
+        const alloc = net * ((r.subtotalKotor||0) / gross);
+        months[r.bulan][produkFinal].revenue += alloc;
+        months[r.bulan][produkFinal].qtyClose += (r.qty||0);
+        months[r.bulan][produkFinal].revClose += alloc;
       }else{
         const g = r.subtotalKotor || 0;
+        months[r.bulan][produkFinal].qtyPending += (r.qty||0);
+        months[r.bulan][produkFinal].grossPending += g;
         pendingTotal += g;
         pendingByMonth[r.bulan] = (pendingByMonth[r.bulan]||0) + g;
+        if(!pendingByProductMonth[r.bulan]) pendingByProductMonth[r.bulan] = {};
+        if(!pendingByProductMonth[r.bulan][produkFinal]) pendingByProductMonth[r.bulan][produkFinal] = {amount:0, orderIds:new Set()};
+        pendingByProductMonth[r.bulan][produkFinal].amount += g;
+        pendingByProductMonth[r.bulan][produkFinal].orderIds.add(orderKey);
         if(!pendingOrderIds.has(orderKey)){ pendingOrderIds.add(orderKey); pendingCount++; }
       }
     });
@@ -1391,11 +1417,17 @@ function jsonOutput(obj) {
     const monthsArr = {};
     Object.keys(months).forEach(bulan => {
       monthsArr[bulan] = Object.keys(months[bulan]).map(produk => ({
-        produk, qty: months[bulan][produk].qty, revenue: months[bulan][produk].revenue
+        produk,
+        qty: months[bulan][produk].qty,
+        revenue: months[bulan][produk].revenue,
+        qtyClose: months[bulan][produk].qtyClose,
+        revClose: months[bulan][produk].revClose,
+        qtyPending: months[bulan][produk].qtyPending,
+        grossPending: months[bulan][produk].grossPending
       }));
     });
 
-    return {months: monthsArr, pendingByMonth, pendingTotal, pendingCount};
+    return {months: monthsArr, pendingByMonth, pendingByProductMonth, pendingTotal, pendingCount};
   }
 
   function getEffectiveMonthsData(){
@@ -1417,6 +1449,61 @@ function jsonOutput(obj) {
       combined[m] = Object.values(merged);
     });
     return combined;
+  }
+
+  // Sama seperti getEffectiveMonthsData, tapi tiap baris juga bawa breakdown
+  // qtyClose/revClose (sudah ke-match income) dan qtyPending/grossPending (belum).
+  // Data legacy (CSV lama) dianggap 100% Close karena memang sudah final saat diupload.
+  function getEffectiveMonthsDataDetailed(){
+    const ledger = computeLedger();
+    const combined = {};
+    Object.keys(monthsData).forEach(m => {
+      combined[m] = (monthsData[m]||[]).map(r => ({
+        produk:r.produk, qty:r.qty, revenue:r.revenue,
+        qtyClose:r.qty, revClose:r.revenue, qtyPending:0, grossPending:0
+      }));
+    });
+    Object.keys(ledger.months).forEach(m => {
+      if(!combined[m]) combined[m] = [];
+      combined[m] = combined[m].concat(ledger.months[m]);
+    });
+    Object.keys(combined).forEach(m => {
+      const merged = {};
+      combined[m].forEach(r => {
+        if(!merged[r.produk]) merged[r.produk] = {produk:r.produk, qty:0, revenue:0, qtyClose:0, revClose:0, qtyPending:0, grossPending:0};
+        merged[r.produk].qty += r.qty;
+        merged[r.produk].revenue += r.revenue;
+        merged[r.produk].qtyClose += r.qtyClose;
+        merged[r.produk].revClose += r.revClose;
+        merged[r.produk].qtyPending += r.qtyPending;
+        merged[r.produk].grossPending += r.grossPending;
+      });
+      combined[m] = Object.values(merged);
+    });
+    return combined;
+  }
+
+  // productMap dengan Qty/Revenue sesuai mode filter status:
+  // "all" = semua (default, sama seperti buildProductMap biasa)
+  // "close" = cuma yang sudah ke-match income
+  // "pending" = cuma yang belum ke-match (Revenue di sini artinya estimasi/gross, belum final)
+  function buildProductMapFiltered(mode){
+    const eff = getEffectiveMonthsDataDetailed();
+    const map = {};
+    monthsPresent().forEach(month => {
+      (eff[month]||[]).forEach(r => {
+        if(!map[r.produk]) map[r.produk] = {qty:{}, rev:{}, totalQty:0, totalRev:0};
+        let qty, rev;
+        if(mode==="close"){ qty = r.qtyClose; rev = r.revClose; }
+        else if(mode==="pending"){ qty = r.qtyPending; rev = r.grossPending; }
+        else { qty = r.qty; rev = r.revenue; }
+        map[r.produk].qty[month] = (map[r.produk].qty[month]||0) + qty;
+        map[r.produk].rev[month] = (map[r.produk].rev[month]||0) + rev;
+        map[r.produk].totalQty += qty;
+        map[r.produk].totalRev += rev;
+      });
+    });
+    return map;
   }
 
   function monthsPresent(){
@@ -2168,6 +2255,8 @@ function jsonOutput(obj) {
     if(!selectedProduct){
       badge.textContent = "Belum ada produk dipilih";
       statRow.innerHTML = "";
+      const existingBreakdown = document.getElementById("explorer-pending-breakdown");
+      if(existingBreakdown) existingBreakdown.innerHTML = "";
       if(chartExplorer){ chartExplorer.destroy(); chartExplorer=null; }
       return;
     }
@@ -2175,15 +2264,41 @@ function jsonOutput(obj) {
     const info = productMap[selectedProduct];
     if(!info){ badge.textContent = "Produk tidak ditemukan di data terbaru"; return; }
 
+    const ledger = computeLedger();
+    const pendingPerMonth = present.map(m => {
+      const pm = ledger.pendingByProductMonth[m] && ledger.pendingByProductMonth[m][selectedProduct];
+      return pm ? pm.amount : 0;
+    });
+    const totalPendingProduk = pendingPerMonth.reduce((a,v)=>a+v, 0);
+    const pendingOrderCount = present.reduce((a,m,i)=>{
+      const pm = ledger.pendingByProductMonth[m] && ledger.pendingByProductMonth[m][selectedProduct];
+      return a + (pm ? pm.orderIds.size : 0);
+    }, 0);
+
     badge.textContent = selectedProduct;
     statRow.innerHTML = `
       <div class="s">Total Qty <b>${fmtNum(info.totalQty)}</b></div>
       <div class="s">Total Revenue <b>${fmtIDR(info.totalRev)}</b></div>
       <div class="s">Rata-rata Qty/bulan <b>${fmtNum(info.totalQty/present.length)}</b></div>
+      ${totalPendingProduk>0 ? `<div class="s" style="color:var(--gold-bright);">Menunggu Pencairan <b>${fmtIDR(totalPendingProduk)}</b> (${pendingOrderCount} pesanan)</div>` : ''}
     `;
+
+    // breakdown per bulan kalau ada yang masih pending, biar kelihatan bulan mana penyebabnya
+    let pendingBreakdownEl = document.getElementById("explorer-pending-breakdown");
+    if(!pendingBreakdownEl){
+      pendingBreakdownEl = document.createElement("div");
+      pendingBreakdownEl.id = "explorer-pending-breakdown";
+      pendingBreakdownEl.style.cssText = "margin:10px 0 4px; font-size:12.5px; color:var(--text-dim);";
+      statRow.insertAdjacentElement("afterend", pendingBreakdownEl);
+    }
+    const bulanBermasalah = present.map((m,i)=>({m, amount:pendingPerMonth[i]})).filter(x=>x.amount>0);
+    pendingBreakdownEl.innerHTML = bulanBermasalah.length
+      ? `⚠️ Ada pesanan produk ini yang income-nya belum ke-match: ${bulanBermasalah.map(x=>`<b style="color:var(--gold-bright);">${x.m} (${fmtIDR(x.amount)})</b>`).join(", ")}. Cek lagi No. Pesanan-nya di sheet Orders vs Income buat bulan itu.`
+      : "";
 
     const qtyData = present.map(m => info.qty[m]||0);
     const revData = present.map(m => info.rev[m]||0);
+    const revEstimateData = present.map((m,i) => (info.rev[m]||0) + pendingPerMonth[i]);
     const ctx = document.getElementById("chart-explorer").getContext("2d");
     if(chartExplorer) chartExplorer.destroy();
     chartExplorer = new Chart(ctx, {
@@ -2191,7 +2306,8 @@ function jsonOutput(obj) {
         labels: present.map(m=>MONTH_SHORT[m]),
         datasets:[
           { type:"bar", label:"Qty", data:qtyData, backgroundColor:"rgba(201,162,39,0.55)", borderRadius:5, yAxisID:"y", order:2 },
-          { type:"line", label:"Revenue", data:revData, borderColor:"#e8c468", backgroundColor:"transparent", tension:.35, yAxisID:"y1", pointRadius:4, pointBackgroundColor:"#e8c468", borderWidth:2, order:1 }
+          { type:"line", label:"Revenue", data:revData, borderColor:"#e8c468", backgroundColor:"transparent", tension:.35, yAxisID:"y1", pointRadius:4, pointBackgroundColor:"#e8c468", borderWidth:2, order:1 },
+          { type:"line", label:"Revenue + Pending", data:revEstimateData, borderColor:"rgba(232,196,104,0.35)", backgroundColor:"transparent", borderDash:[5,4], tension:.35, yAxisID:"y1", pointRadius:0, borderWidth:1.5, order:0, hidden: totalPendingProduk===0 }
         ]
       },
       options:{
@@ -2201,7 +2317,7 @@ function jsonOutput(obj) {
           legend:{ labels:{ color:"#9c9ca2", font:{family:"Plus Jakarta Sans"} } },
           tooltip:{
             backgroundColor:"#1c1c20", borderColor:"#2a2a2e", borderWidth:1, titleColor:"#f2efe9", bodyColor:"#f2efe9",
-            callbacks:{ label:(c)=> c.dataset.label==="Qty" ? "Qty: "+fmtNum(c.parsed.y)+" pcs" : "Revenue: "+fmtIDR(c.parsed.y) }
+            callbacks:{ label:(c)=> c.dataset.label==="Qty" ? "Qty: "+fmtNum(c.parsed.y)+" pcs" : c.dataset.label+": "+fmtIDR(c.parsed.y) }
           }
         },
         scales:{
@@ -2308,13 +2424,14 @@ function jsonOutput(obj) {
       showToast("Library Excel belum kemuat sempurna. Tunggu sebentar lalu coba lagi.", true);
       return;
     }
-    const productMap = buildProductMap();
+    const productMap = buildProductMapFiltered(tableStatusFilter);
     const present = monthsPresent();
     const names = getSortedFilteredNames(productMap);
     if(!names.length){
       showToast("Nggak ada data buat di-download.", true);
       return;
     }
+    const modeLabel = tableStatusFilter==="close" ? "Sudah Close" : tableStatusFilter==="pending" ? "Masih Pending" : "Semua";
 
     const aoa = [];
     const row1 = ["Nama Produk"];
@@ -2344,8 +2461,8 @@ function jsonOutput(obj) {
     ws['!cols'] = [{wch:38}].concat(present.flatMap(()=>[{wch:9},{wch:15}])).concat([{wch:9},{wch:15}]);
 
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Tabel Semua Produk");
-    const filename = `Tabel_Semua_Produk_Hypospot_${new Date().toISOString().slice(0,10)}.xlsx`;
+    XLSX.utils.book_append_sheet(wb, ws, `Tabel Semua Produk (${modeLabel})`.slice(0,31));
+    const filename = `Tabel_Semua_Produk_Hypospot_${modeLabel.replace(/\s+/g,'')}_${new Date().toISOString().slice(0,10)}.xlsx`;
     XLSX.writeFile(wb, filename);
     showToast(`Excel berhasil di-download: ${filename}`);
   }
@@ -2663,7 +2780,7 @@ function jsonOutput(obj) {
     try{ renderTop10(); }
     catch(err){ throw new Error(`renderAll gagal di renderTop10: ${err.message}`); }
 
-    try{ renderFullTable(productMap, present); }
+    try{ renderFullTable(buildProductMapFiltered(tableStatusFilter), present); }
     catch(err){ throw new Error(`renderAll gagal di renderFullTable: ${err.message}`); }
 
     if(selectedProduct && !productMap[selectedProduct]) selectedProduct = null;
@@ -2802,6 +2919,22 @@ function jsonOutput(obj) {
       renderAll();
     }, 180);
   });
+
+  function updateTableStatusNote(){
+    const note = document.getElementById("table-status-note");
+    if(tableStatusFilter==="close") note.textContent = "Cuma nampilin Qty & Revenue yang income-nya SUDAH ke-match (uang sudah pasti masuk).";
+    else if(tableStatusFilter==="pending") note.textContent = "Cuma nampilin Qty & estimasi Revenue (gross) yang BELUM ke-match income — masih menunggu pencairan.";
+    else note.textContent = "Menampilkan semua transaksi (sudah close + masih pending digabung).";
+  }
+  document.querySelectorAll("#table-status-filter .status-filter-btn").forEach(btn => {
+    btn.addEventListener("click", ()=>{
+      tableStatusFilter = btn.dataset.mode;
+      document.querySelectorAll("#table-status-filter .status-filter-btn").forEach(b => b.classList.toggle("active", b===btn));
+      updateTableStatusNote();
+      renderAll();
+    });
+  });
+  updateTableStatusNote();
 
   /* ================= NAVIGASI SIDEBAR (multi-page) ================= */
   const PAGE_STORAGE_KEY = "hypospot_active_page";
