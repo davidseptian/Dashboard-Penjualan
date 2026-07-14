@@ -318,6 +318,8 @@
   table.full tbody tr:hover td{background:var(--bg-card-hover); cursor:pointer;}
   table.full tbody tr.active td{background:var(--gold-dim);}
   table.full tbody td.total{color:var(--gold-bright); font-weight:700;}
+  td.laba-missing{color:var(--text-dim); font-style:italic;}
+  tr.laba-missing-row td{opacity:.6;}
   .sort-arrow{font-size:9px; margin-left:3px; opacity:.7;}
 
   /* ---------- sheet connection panel ---------- */
@@ -736,6 +738,30 @@ function jsonOutput(obj) {
 
   <div class="stitch tight"></div>
 
+  <!-- ============ SAMBUNGKAN SUMBER HPP ============ -->
+  <section id="hpp-section">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">00b</span> Sambungkan Sumber HPP (Master Modal)</h2>
+        <p>HPP tiap SKU diambil <b>langsung dan otomatis</b> dari spreadsheet Master Modal kamu — jadi kalau harga modal berubah di situ, Analisis Laba di dashboard ikut update sendiri.</p>
+      </div>
+      <span class="status-pill" id="hpp-status"><span class="dot"></span><span id="hpp-status-text">Belum tersambung</span></span>
+    </div>
+    <div class="panel">
+      <div class="connect-row">
+        <input type="url" id="hpp-url-input" placeholder="Paste URL Google Sheet Master HPP (yang ada gid-nya)">
+        <button class="btn-gold" id="btn-connect-hpp">Sambungkan</button>
+        <button class="btn-gold secondary" id="btn-resync-hpp" style="display:none;">Sinkronkan Ulang</button>
+        <button class="btn-ghost" id="btn-disconnect-hpp" style="display:none;">Lepas Koneksi</button>
+      </div>
+      <p style="color:var(--text-dim); font-size:12.5px; margin-top:14px;">
+        Syarat: sheet-nya harus di-share minimal <b>"Anyone with the link can view"</b> (di tombol Share, kanan atas Google Sheets). Sistem cari kolom <code>SKU</code> dan <code>MODAL / HPP</code> otomatis dari sheet tab yang kamu buka terakhir (ditandai lewat <code>gid</code> di URL).
+      </p>
+    </div>
+  </section>
+
+  <div class="stitch tight"></div>
+
   </div>
   <!-- ============ PAGE: ORDERS & INCOME ============ -->
   <div class="page" data-page="orders">
@@ -974,7 +1000,50 @@ function jsonOutput(obj) {
       </div>
     </section>
 
-  </div>
+    <div class="stitch tight"></div>
+
+    <!-- ============ ANALISIS LABA PER PRODUK ============ -->
+    <section id="laba-section">
+      <div class="section-head">
+        <div><h2><span class="num">09</span> Analisis Laba per Produk</h2><p>HPP diambil live dari spreadsheet Master Modal. Laba/pcs = Harga/pcs − HPP.</p></div>
+        <select class="month-select" id="laba-month-select"></select>
+      </div>
+      <div class="kpi-grid" style="margin-bottom:22px;">
+        <div class="kpi">
+          <div class="label">Total Laba (Bulan Terpilih)</div>
+          <div class="value gold" id="laba-kpi-total">Rp 0</div>
+          <div class="foot" id="laba-kpi-total-foot">—</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Rata-rata Margin</div>
+          <div class="value" id="laba-kpi-margin">0%</div>
+          <div class="foot">Laba / Revenue</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Produk Belum Ada HPP</div>
+          <div class="value" id="laba-kpi-missing" style="color:var(--text-muted);">0</div>
+          <div class="foot" id="laba-kpi-missing-foot">—</div>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table class="full" id="laba-table">
+          <thead>
+            <tr>
+              <th data-key="produk" style="text-align:left;">Nama Produk</th>
+              <th data-key="qty">Qty</th>
+              <th data-key="revenue">Revenue</th>
+              <th data-key="harga_pcs">Harga /pcs</th>
+              <th data-key="hpp">Harga Modal</th>
+              <th data-key="laba_pcs">Laba /pcs</th>
+              <th data-key="total_laba">Total Laba</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    </div>
 
   </div>
   <!-- /page dashboard -->
@@ -1032,6 +1101,14 @@ function jsonOutput(obj) {
   let dirtyIncomePlatforms = new Set(); // platform yang income-nya belum ditulis ke sheet
   const LEDGER_STORAGE_KEY = "hypospot_ledger_v1";
   const PLATFORM_LABEL = {SHOPEE:"Shopee", TIKTOK:"TikTok Shop", TOKOPEDIA:"Tokopedia"};
+
+  // ---- sumber HPP (Master Modal, live dari Google Sheet lain) ----
+  let hppMap = {};       // SKU -> modal (angka)
+  let hppByName = {};    // nama produk (lowercase) -> modal (fallback kalau SKU tak ketemu)
+  let hppUrl = "";
+  const HPP_URL_KEY = "hypospot_hpp_url";
+  const HPP_CACHE_KEY = "hypospot_hpp_cache";
+  let labaSortState = {key:"total_laba", dir:"desc"};
 
   /* ================= TOAST ================= */
   function showToast(msg, isErr){
@@ -1121,6 +1198,101 @@ function jsonOutput(obj) {
   function saveSheetConfig(url){
     SHEET_URL = url;
     try{ localStorage.setItem(SHEET_URL_KEY, url); }catch(e){}
+  }
+
+  /* ================= HPP (Master Modal, live dari Google Sheet lain) ================= */
+  function loadHppConfig(){
+    try{ hppUrl = localStorage.getItem(HPP_URL_KEY) || ""; }catch(e){ hppUrl = ""; }
+    document.getElementById("hpp-url-input").value = hppUrl;
+  }
+  function saveHppConfig(url){
+    hppUrl = url;
+    try{ localStorage.setItem(HPP_URL_KEY, url); }catch(e){}
+  }
+  function saveHppCache(){
+    try{ localStorage.setItem(HPP_CACHE_KEY, JSON.stringify({hppMap, hppByName})); }catch(e){}
+  }
+  function loadHppCache(){
+    try{
+      const raw = localStorage.getItem(HPP_CACHE_KEY);
+      if(raw){ const p = JSON.parse(raw)||{}; hppMap = p.hppMap||{}; hppByName = p.hppByName||{}; }
+    }catch(e){ hppMap = {}; hppByName = {}; }
+  }
+  function setHppStatus(state, extra){
+    const pill = document.getElementById("hpp-status");
+    const text = document.getElementById("hpp-status-text");
+    pill.className = "status-pill" + (state==="connected" ? " connected" : state==="error" ? " error" : state==="loading" ? " loading" : "");
+    const labels = {
+      disconnected: "Belum tersambung",
+      loading: "Menyinkronkan…",
+      connected: `Tersambung — ${extra||0} SKU punya HPP`,
+      error: `Gagal tersambung: ${extra||"cek URL & sharing sheet"}`
+    };
+    text.textContent = labels[state] || labels.disconnected;
+    document.getElementById("btn-resync-hpp").style.display = (state==="connected"||state==="error") ? "inline-block" : "none";
+    document.getElementById("btn-disconnect-hpp").style.display = (state==="connected"||state==="error") ? "inline-block" : "none";
+  }
+  function buildHppCsvUrl(url){
+    const idMatch = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if(!idMatch) return null;
+    const id = idMatch[1];
+    const gidMatch = url.match(/[?#&]gid=(\d+)/);
+    const gid = gidMatch ? gidMatch[1] : "0";
+    return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
+  }
+  function parseRupiah(x){
+    if(x===null || x===undefined) return null;
+    const s = x.toString().trim();
+    if(!s) return null;
+    const neg = s.indexOf("-") >= 0;
+    const digits = s.replace(/[^\d]/g,"");
+    if(!digits) return null;
+    const n = parseInt(digits, 10);
+    return neg ? -n : n;
+  }
+  async function fetchHppData(showLoading){
+    if(!hppUrl) return;
+    if(showLoading) setHppStatus("loading");
+    const csvUrl = buildHppCsvUrl(hppUrl);
+    if(!csvUrl){ setHppStatus("error", "URL sheet tidak valid"); return; }
+    try{
+      const sep = csvUrl.includes("?") ? "&" : "?";
+      const res = await fetch(csvUrl + sep + "t=" + Date.now());
+      if(!res.ok) throw new Error(`HTTP ${res.status} — cek sheet-nya sudah di-share "Anyone with the link can view"`);
+      const text = await res.text();
+      const parsedCsv = Papa.parse(text, {skipEmptyLines:false});
+      const rows = parsedCsv.data;
+      let headerIdx = -1;
+      for(let i=0;i<Math.min(rows.length,15);i++){
+        const row = (rows[i]||[]).map(c => (c||"").toString().trim());
+        const hasSku = row.some(c => c.toUpperCase()==="SKU");
+        const hasHpp = row.some(c => c.toUpperCase().indexOf("MODAL")>=0);
+        if(hasSku && hasHpp){ headerIdx = i; break; }
+      }
+      if(headerIdx<0) throw new Error('Kolom "SKU" / "MODAL / HPP" tidak ditemukan di sheet ini');
+      const header = rows[headerIdx].map(c => (c||"").toString().trim());
+      const idxSku = header.findIndex(h => h.toUpperCase()==="SKU");
+      const idxNama = header.findIndex(h => h.toUpperCase().indexOf("NAMA PRODUK")>=0);
+      const idxHpp = header.findIndex(h => h.toUpperCase().indexOf("MODAL")>=0);
+      const newHppMap = {}, newHppByName = {};
+      for(let i=headerIdx+1;i<rows.length;i++){
+        const row = rows[i];
+        if(!row) continue;
+        const sku = (row[idxSku]||"").toString().trim();
+        const nama = idxNama>=0 ? (row[idxNama]||"").toString().trim() : "";
+        const modal = parseRupiah(row[idxHpp]);
+        if(modal===null) continue;
+        if(sku) newHppMap[sku] = modal;
+        if(nama) newHppByName[nama.toLowerCase()] = modal;
+      }
+      hppMap = newHppMap;
+      hppByName = newHppByName;
+      saveHppCache();
+      setHppStatus("connected", Object.keys(hppMap).length);
+      renderAll();
+    }catch(err){
+      setHppStatus("error", err.message);
+    }
   }
 
   /* ================= UTIL ================= */
@@ -2178,6 +2350,85 @@ function jsonOutput(obj) {
     showToast(`Excel berhasil di-download: ${filename}`);
   }
 
+  /* ================= ANALISIS LABA PER PRODUK ================= */
+  function invertSkuMap(){
+    const inv = {};
+    Object.keys(skuMap).forEach(kode => { inv[skuMap[kode]] = kode; });
+    return inv;
+  }
+  function getHppForProduct(nama, inv){
+    const sku = inv[nama];
+    if(sku && hppMap[sku] !== undefined) return hppMap[sku];
+    const byName = hppByName[nama.toLowerCase()];
+    if(byName !== undefined) return byName;
+    return null;
+  }
+  function updateLabaHeaderArrows(){
+    document.querySelectorAll("#laba-table thead th[data-key]").forEach(th => {
+      const key = th.dataset.key;
+      if(!th.dataset.label) th.dataset.label = th.textContent.trim();
+      th.textContent = th.dataset.label + (labaSortState.key===key ? (labaSortState.dir==="desc" ? " ▼" : " ▲") : "");
+    });
+  }
+  function renderLaba(){
+    const productMap = buildProductMap();
+    const present = monthsPresent();
+    const sel = document.getElementById("laba-month-select");
+    const prevVal = sel.value;
+    sel.innerHTML = `<option value="__ALL__">Semua Bulan (Total)</option>` + present.map(m => `<option value="${m}">${m}</option>`).join("");
+    if(prevVal && (prevVal==="__ALL__" || present.includes(prevVal))) sel.value = prevVal;
+    else sel.value = present.length ? present[present.length-1] : "__ALL__";
+    const scope = sel.value;
+
+    const inv = invertSkuMap();
+    let rows = Object.keys(productMap).map(nama => {
+      const info = productMap[nama];
+      let qty, revenue;
+      if(scope === "__ALL__"){ qty = info.totalQty; revenue = info.totalRev; }
+      else { qty = info.qty[scope]||0; revenue = info.rev[scope]||0; }
+      const harga_pcs = qty>0 ? revenue/qty : 0;
+      const hpp = getHppForProduct(nama, inv);
+      const laba_pcs = hpp!==null ? harga_pcs - hpp : null;
+      const total_laba = laba_pcs!==null ? laba_pcs*qty : null;
+      return {produk:nama, qty, revenue, harga_pcs, hpp, laba_pcs, total_laba};
+    }).filter(r => r.qty > 0);
+
+    rows.sort((a,b) => {
+      let va = a[labaSortState.key], vb = b[labaSortState.key];
+      if(va===null) va = labaSortState.dir==="desc" ? -Infinity : Infinity;
+      if(vb===null) vb = labaSortState.dir==="desc" ? -Infinity : Infinity;
+      if(typeof va === "string") return labaSortState.dir==="asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      return labaSortState.dir==="asc" ? va-vb : vb-va;
+    });
+
+    const missingCount = rows.filter(r => r.hpp===null).length;
+    const totalLabaSum = rows.reduce((a,r) => a + (r.total_laba||0), 0);
+    const totalRevSum = rows.reduce((a,r) => a + r.revenue, 0);
+    const margin = totalRevSum>0 ? (totalLabaSum/totalRevSum*100) : 0;
+
+    document.getElementById("laba-kpi-total").textContent = fmtIDR(totalLabaSum);
+    document.getElementById("laba-kpi-total-foot").textContent = scope==="__ALL__" ? "Semua bulan" : `Bulan ${scope}`;
+    document.getElementById("laba-kpi-margin").textContent = margin.toFixed(1)+"%";
+    document.getElementById("laba-kpi-missing").textContent = missingCount;
+    document.getElementById("laba-kpi-missing-foot").textContent = missingCount ? "Belum ke-mapping ke Master HPP" : "Semua produk sudah ada HPP-nya";
+
+    updateLabaHeaderArrows();
+
+    const tbody = document.querySelector("#laba-table tbody");
+    tbody.innerHTML = rows.map(r => {
+      const missing = r.hpp===null;
+      return `<tr class="${missing?'laba-missing-row':''}">
+        <td>${r.produk}</td>
+        <td>${fmtNum(r.qty)}</td>
+        <td>${fmtIDR(r.revenue)}</td>
+        <td>${fmtIDR(r.harga_pcs)}</td>
+        <td class="${missing?'laba-missing':''}">${missing?'— belum ada HPP':fmtIDR(r.hpp)}</td>
+        <td class="${missing?'laba-missing':''}">${missing?'—':fmtIDR(r.laba_pcs)}</td>
+        <td class="total ${missing?'laba-missing':''}">${missing?'—':fmtIDR(r.total_laba)}</td>
+      </tr>`;
+    }).join("");
+  }
+
   /* ================= MASTER RENDER ================= */
   function renderOrdersChips(){
     const wrap = document.getElementById("orders-chips");
@@ -2419,6 +2670,9 @@ function jsonOutput(obj) {
 
     try{ renderExplorer(); }
     catch(err){ throw new Error(`renderAll gagal di renderExplorer: ${err.message}`); }
+
+    try{ renderLaba(); }
+    catch(err){ throw new Error(`renderAll gagal di renderLaba: ${err.message}`); }
   }
 
   /* ================= EVENTS ================= */
@@ -2504,6 +2758,32 @@ function jsonOutput(obj) {
     });
   });
 
+  document.getElementById("btn-connect-hpp").addEventListener("click", async ()=>{
+    const url = document.getElementById("hpp-url-input").value.trim();
+    if(!url){ showToast("Isi dulu URL Google Sheet Master HPP-nya", true); return; }
+    saveHppConfig(url);
+    await fetchHppData(true);
+  });
+  document.getElementById("btn-resync-hpp").addEventListener("click", ()=> fetchHppData(true));
+  document.getElementById("btn-disconnect-hpp").addEventListener("click", ()=>{
+    if(!confirm("Lepas koneksi sumber HPP? Data HPP di spreadsheet Master Modal kamu tidak akan terhapus, cuma dashboard berhenti narik datanya.")) return;
+    saveHppConfig("");
+    document.getElementById("hpp-url-input").value = "";
+    hppMap = {}; hppByName = {};
+    saveHppCache();
+    setHppStatus("disconnected");
+    renderAll();
+  });
+  document.getElementById("laba-month-select").addEventListener("change", renderLaba);
+  document.querySelectorAll("#laba-table thead th[data-key]").forEach(th => {
+    th.addEventListener("click", ()=>{
+      const key = th.dataset.key;
+      if(labaSortState.key === key) labaSortState.dir = labaSortState.dir==="desc" ? "asc" : "desc";
+      else { labaSortState.key = key; labaSortState.dir = "desc"; }
+      renderLaba();
+    });
+  });
+
   document.getElementById("top10-month-select").addEventListener("change", renderTop10);
 
   const searchInput = document.getElementById("product-search");
@@ -2540,6 +2820,8 @@ function jsonOutput(obj) {
   loadLocalCache();
   loadLedgerCache();
   loadSheetConfig();
+  loadHppConfig();
+  loadHppCache();
   renderAll();
   {
     let initialPage = "dashboard";
@@ -2552,6 +2834,8 @@ function jsonOutput(obj) {
   }
   if(SHEET_URL) syncFromSheet(true);
   else setSyncStatus("disconnected");
+  if(hppUrl) fetchHppData(true);
+  else setHppStatus("disconnected");
 })();
 </script>
 </body>
