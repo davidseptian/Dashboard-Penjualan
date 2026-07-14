@@ -661,10 +661,16 @@ function doPost(e) {
     if (action === "saveOrders") {
       const sheet = getOrCreateSheet(SHEET_ORDERS, HEADERS_ORDERS);
       const platform = body.platform, month = body.month;
+      const newIds = {};
+      (body.rows || []).forEach(function (r) { newIds[r.noPesanan] = true; });
       const rows = (body.rows || []).map(function (r) {
         return [platform, month, r.noPesanan, r.produk, r.qty, r.subtotalKotor, now, r.sku || "", r.variasi || ""];
       });
-      replaceRowsWhere(sheet, function (row) { return row[0] === platform && row[1] === month; }, rows, HEADERS_ORDERS.length);
+      // Upsert per (Platform + No. Pesanan) — bukan hapus semua baris Platform+Bulan,
+      // supaya upload parsial (mis. tgl 1-15 lalu 15-30 di bulan sama) saling menambah.
+      replaceRowsWhere(sheet, function (row) {
+        return row[0] === platform && newIds[row[2]];
+      }, rows, HEADERS_ORDERS.length);
       return jsonOutput({ ok: true, saved: rows.length });
     }
 
@@ -1608,8 +1614,11 @@ function jsonOutput(obj) {
   }
 
   function stageOrders(platform, bulan, rows){
+    // Upsert per (platform + No. Pesanan) — bukan hapus seluruh batch platform+bulan,
+    // supaya upload parsial (mis. tgl 1-15 lalu 15-30) saling menambah, bukan saling menimpa.
     const key = platform+"|||"+bulan;
-    ordersRaw = ordersRaw.filter(r => (r.platform+"|||"+r.bulan) !== key);
+    const newIds = new Set(rows.map(r => platform+"|||"+r.noPesanan));
+    ordersRaw = ordersRaw.filter(r => !(r.platform===platform && newIds.has(r.platform+"|||"+r.noPesanan)));
     rows.forEach(r => ordersRaw.push({platform, bulan, noPesanan:r.noPesanan, produk:r.produk, sku:r.sku||"", variasi:r.variasi||"", qty:r.qty, subtotalKotor:r.subtotalKotor}));
     dirtyOrderKeys.add(key);
     saveLedgerCache();
