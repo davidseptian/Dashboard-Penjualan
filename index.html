@@ -1026,7 +1026,7 @@ function jsonOutput(obj) {
     <!-- ============ ANALISIS LABA PER PRODUK ============ -->
     <section id="laba-section">
       <div class="section-head">
-        <div><h2><span class="num">09</span> Analisis Laba per Produk</h2><p>HPP diambil live dari spreadsheet Master Modal. Laba/pcs = Harga/pcs − HPP.</p></div>
+        <div><h2><span class="num">09</span> Analisis Laba per Produk</h2><p>Hanya menghitung transaksi yang <b>sudah Close</b> (income sudah match) — Qty & Revenue balance, jadi Harga/pcs riil. HPP diambil live dari spreadsheet Master Modal.</p></div>
         <select class="month-select" id="laba-month-select"></select>
       </div>
       <div class="kpi-grid" style="margin-bottom:22px;">
@@ -2497,7 +2497,10 @@ function jsonOutput(obj) {
     });
   }
   function renderLaba(){
-    const productMap = buildProductMap();
+    // Pakai data yang SUDAH CLOSE saja (income sudah match) — supaya Qty dan Revenue
+    // sama-sama merujuk ke transaksi yang sama persis, jadi Harga/pcs riil (nggak
+    // keweteran turun gara-gara Qty ikut menghitung pesanan yang masih pending).
+    const productMap = buildProductMapFiltered("close");
     const present = monthsPresent();
     const sel = document.getElementById("laba-month-select");
     const prevVal = sel.value;
