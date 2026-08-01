@@ -1700,6 +1700,7 @@ function jsonOutput(obj) {
     if(findCI("orders")) return {platform:"SHOPEE", kind:"orders", sheetName: findCI("orders")};
     if(findCI("orderskulist")) return {platform:"TIKTOK", kind:"orders", sheetName: findCI("orderskulist")};
     if(names.includes("Income")) return {platform:"SHOPEE", kind:"income", sheetName:"Income"};
+    if(findCI("penghasilan")) return {platform:"SHOPEE", kind:"income", sheetName: findCI("penghasilan")};
     if(findCI("detail pesanan")) return {platform:"TIKTOK", kind:"income", sheetName: findCI("detail pesanan")};
     if(findCI("order details")) return {platform:"TIKTOK", kind:"income", sheetName: findCI("order details")};
     return null;
@@ -1832,15 +1833,53 @@ function jsonOutput(obj) {
     return -1;
   }
 
+  // Kolom-kolom di sheet "Penghasilan" (format breakdown Shopee terbaru) yang perlu
+  // dijumlah untuk dapat net income per pesanan — sudah divalidasi cocok 1:1 dengan
+  // angka "3. Total yang Dilepas" di tab Summary.
+  const SHOPEE_PENGHASILAN_SUM_COLS = [
+    "Harga Produk","Jumlah Pengembalian Dana ke Pembeli","Ongkir Dibayar Pembeli",
+    "Ongkos Kirim yang Dibayarkan ke Jasa Kirim","Potongan Ongkos Kirim dari Jasa Kirim","Gratis Ongkir dari Shopee",
+    "Ongkos Kirim Pengembalian Barang","Return to Seller Fee","Pengembalian Biaya Kirim",
+    "Voucher disponsor oleh Penjual","Cashback Koin disponsori Penjual","Diskon Produk dari Shopee",
+    "Voucher co-fund disponsor oleh Penjual","Cashback Koin Co-fund disponsori Penjual",
+    "Biaya Administrasi (termasuk PPN 11%)","Biaya Proses Pesanan","Biaya Pembayaran",
+    "Biaya Gratis Ongkir XTRA - Ukuran Khusus (Kategori F)","Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori D)",
+    "Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori F)","Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori G)",
+    "Biaya Gratis Ongkir XTRA - Ukuran Biasa (Kategori H)","AMS Service Fee","Biaya Kampanye","Biaya Komisi AMS",
+    "Biaya Isi Saldo Otomatis (dari Penghasilan)","Biaya Lainnya","Biaya Transaksi","FBS Fee","PPh 22",
+    "Promo Gratis Ongkir dari Penjual","Kompensasi","Pengembalian Dana ke Pembeli",
+    "Pro-rata Koin yang Ditukarkan untuk Pengembalian Barang","Pro-rata Voucher Shopee untuk Pengembalian Barang",
+    "Pro-rated Bank Payment Channel Promotion for return refund Items",
+    "Pro-rated Shopee Payment Channel Promotion  for return refund Items"
+  ];
   function parseRawIncome(wb, detection){
     const rows = safeSheetRows(wb, detection.sheetName);
     if(detection.platform === "SHOPEE"){
-      const headerIdx = findHeaderRowIndex(rows, ["No. Pesanan","Total Penghasilan"]);
-      if(headerIdx<0) return null;
-      return rowsToObjects(rows, headerIdx).filter(Boolean).map(o=>({
-        noPesanan: (o["No. Pesanan"]||"").toString().trim(),
-        totalPenghasilan: parseIndoMoney(o["Total Penghasilan"])
-      })).filter(r=>r.noPesanan);
+      // Format lama: kolom "Total Penghasilan" sudah siap pakai
+      const headerIdxOld = findHeaderRowIndex(rows, ["No. Pesanan","Total Penghasilan"]);
+      if(headerIdxOld >= 0){
+        return rowsToObjects(rows, headerIdxOld).filter(Boolean).map(o=>({
+          noPesanan: (o["No. Pesanan"]||"").toString().trim(),
+          totalPenghasilan: parseIndoMoney(o["Total Penghasilan"])
+        })).filter(r=>r.noPesanan);
+      }
+      // Format baru: sheet "Penghasilan" — breakdown biaya, perlu dijumlah manual.
+      // Ambil baris "Lihat berdasarkan" = "Order" saja (baris "Sku" adalah duplikat nilai per order).
+      const headerIdxNew = findHeaderRowIndex(rows, ["No. Pesanan","Lihat berdasarkan"]);
+      if(headerIdxNew >= 0){
+        const objs = rowsToObjects(rows, headerIdxNew).filter(Boolean);
+        const byOrder = {};
+        objs.forEach(o=>{
+          if((o["Lihat berdasarkan"]||"").toString().trim().toLowerCase() !== "order") return;
+          const noPesanan = (o["No. Pesanan"]||"").toString().trim();
+          if(!noPesanan) return;
+          let sum = 0;
+          SHOPEE_PENGHASILAN_SUM_COLS.forEach(col => { sum += parseIndoMoney(o[col]) || 0; });
+          byOrder[noPesanan] = (byOrder[noPesanan]||0) + sum;
+        });
+        return Object.keys(byOrder).map(noPesanan => ({noPesanan, totalPenghasilan: byOrder[noPesanan]}));
+      }
+      return null;
     }
     if(detection.platform === "TIKTOK"){
       const headerIdx = findHeaderRowIndexFlexible(rows, [
