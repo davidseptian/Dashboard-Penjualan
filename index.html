@@ -467,6 +467,9 @@
       <button class="nav-item" data-page="mapping">
         <span class="nav-icon">🔗</span> Pemetaan Produk
       </button>
+      <button class="nav-item" data-page="ads">
+        <span class="nav-icon">📢</span> Iklan & ROAS
+      </button>
       <button class="nav-item" data-page="settings">
         <span class="nav-icon">⚙️</span> Pengaturan
       </button>
@@ -527,6 +530,9 @@ const HEADERS_MAPPING = ["Platform", "Nama Produk Asli", "Nama Produk Master"];
 
 const SHEET_SKUMAP = "SkuMap";
 const HEADERS_SKUMAP = ["Kode Produk", "Nama Produk Master"];
+
+const SHEET_ADS = "Ads";
+const HEADERS_ADS = ["Platform", "Bulan", "Nama Produk", "Biaya", "Omzet Iklan", "Qty Iklan", "Waktu Upload"];
 
 function getOrCreateSheet(name, headers) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -633,7 +639,23 @@ function doGet(e) {
     skuMap.push({ kode: row[0].toString(), nama: row[1].toString() });
   }
 
-  return jsonOutput({ ok: true, data: legacy, orders: orders, income: income, mapping: mapping, skuMap: skuMap });
+  const adsSheet = getOrCreateSheet(SHEET_ADS, HEADERS_ADS);
+  const adsValues = adsSheet.getDataRange().getValues();
+  const ads = [];
+  for (let i = 1; i < adsValues.length; i++) {
+    const row = adsValues[i];
+    if (!row[0] || !row[1] || !row[2]) continue;
+    ads.push({
+      platform: row[0].toString(),
+      bulan: row[1].toString(),
+      produk: row[2].toString(),
+      biaya: Number(row[3]) || 0,
+      omzetIklan: Number(row[4]) || 0,
+      qtyIklan: Number(row[5]) || 0
+    });
+  }
+
+  return jsonOutput({ ok: true, data: legacy, orders: orders, income: income, mapping: mapping, skuMap: skuMap, ads: ads });
 }
 
 function doPost(e) {
@@ -726,8 +748,24 @@ function doPost(e) {
       return jsonOutput({ ok: true, saved: rows.length });
     }
 
+    if (action === "saveAds") {
+      const sheet = getOrCreateSheet(SHEET_ADS, HEADERS_ADS);
+      const platform = body.platform, month = body.month;
+      const rows = (body.rows || []).map(function (r) {
+        return [platform, month, r.produk, r.biaya, r.omzetIklan, r.qtyIklan, now];
+      });
+      replaceRowsWhere(sheet, function (row) { return row[0] === platform && row[1] === month; }, rows, HEADERS_ADS.length);
+      return jsonOutput({ ok: true, saved: rows.length });
+    }
+
+    if (action === "deleteAds") {
+      const sheet = getOrCreateSheet(SHEET_ADS, HEADERS_ADS);
+      replaceRowsWhere(sheet, function (row) { return row[0] === body.platform && row[1] === body.month; }, [], HEADERS_ADS.length);
+      return jsonOutput({ ok: true });
+    }
+
     if (action === "resetAll") {
-      [[SHEET_LEGACY, HEADERS_LEGACY], [SHEET_ORDERS, HEADERS_ORDERS], [SHEET_INCOME, HEADERS_INCOME], [SHEET_MAPPING, HEADERS_MAPPING], [SHEET_SKUMAP, HEADERS_SKUMAP]].forEach(function (pair) {
+      [[SHEET_LEGACY, HEADERS_LEGACY], [SHEET_ORDERS, HEADERS_ORDERS], [SHEET_INCOME, HEADERS_INCOME], [SHEET_MAPPING, HEADERS_MAPPING], [SHEET_SKUMAP, HEADERS_SKUMAP], [SHEET_ADS, HEADERS_ADS]].forEach(function (pair) {
         const sheet = getOrCreateSheet(pair[0], pair[1]);
         sheet.clearContents();
         sheet.appendRow(pair[1]);
@@ -1069,6 +1107,126 @@ function jsonOutput(obj) {
   </div>
   <!-- /page dashboard -->
 
+  <!-- ============ PAGE: IKLAN & ROAS ============ -->
+  <div class="page" data-page="ads">
+
+  <!-- ============ CATATAN CARA DOWNLOAD ============ -->
+  <section id="ads-note-section">
+    <div class="section-head">
+      <div><h2><span class="num">10</span> Upload Data Iklan</h2><p>Upload laporan iklan mentah per periode — biaya, omzet iklan, dan qty dari iklan otomatis kebaca per produk.</p></div>
+    </div>
+    <div class="panel" style="border-left:3px solid var(--gold);">
+      <strong style="color:var(--gold-bright);">📌 Catatan: cara download data iklan (biar nggak lupa)</strong>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:16px;">
+        <div>
+          <div class="platform-chip shopee" style="margin-bottom:8px;">SHOPEE</div>
+          <p style="color:var(--text-muted); font-size:13px; line-height:1.7; margin:0;">
+            Iklan Shopee → Iklan Produk → Pilih tanggal yg sesuai → Download Data → Pilih <b>"Data Keseluruhan Iklan"</b>
+          </p>
+        </div>
+        <div>
+          <div class="platform-chip tiktok" style="margin-bottom:8px;">TIKTOK SHOP</div>
+          <p style="color:var(--text-muted); font-size:13px; line-height:1.7; margin:0;">
+            Pemasaran → Iklan Toko → Sesuaikan tanggal → ke GMV Max Produk → Analitik pada kampanye → Export
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="stitch tight"></div>
+
+  <!-- ============ UPLOAD IKLAN ============ -->
+  <section id="ads-upload-section">
+    <div class="section-head">
+      <div><h2><span class="num">11</span> Upload File Iklan</h2><p>1 file = 1 platform + 1 periode. Bulan otomatis dideteksi dari file, bisa diganti manual kalau salah baca.</p></div>
+      <button class="btn-gold" id="btn-save-ads" style="display:none;">Simpan Iklan ke Spreadsheet</button>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="platform-chip shopee" style="margin-bottom:10px;">SHOPEE</div>
+        <label style="font-size:12.5px; color:var(--text-dim); font-weight:600; display:block; margin-bottom:14px;">
+          Bulan (kalau auto-deteksi salah/gagal)
+          <select class="month-select" id="ads-shopee-month-select" style="display:block; margin-top:6px; width:100%;"></select>
+        </label>
+        <div class="dropzone small" id="dropzone-ads-shopee">
+          <input type="file" id="file-input-ads-shopee" accept=".csv">
+          <div class="icon">⬆</div>
+          <div class="main-txt">Klik atau seret CSV "Data Keseluruhan Iklan" Shopee</div>
+          <div class="sub-txt">Format: Semua Laporan Iklan CPC</div>
+        </div>
+        <div class="chips" id="ads-shopee-chips" style="margin-top:14px;"></div>
+      </div>
+      <div class="panel">
+        <div class="platform-chip tiktok" style="margin-bottom:10px;">TIKTOK SHOP</div>
+        <label style="font-size:12.5px; color:var(--text-dim); font-weight:600; display:block; margin-bottom:14px;">
+          Bulan (kalau auto-deteksi salah/gagal)
+          <select class="month-select" id="ads-tiktok-month-select" style="display:block; margin-top:6px; width:100%;"></select>
+        </label>
+        <div class="dropzone small" id="dropzone-ads-tiktok">
+          <input type="file" id="file-input-ads-tiktok" accept=".xlsx">
+          <div class="icon">⬆</div>
+          <div class="main-txt">Klik atau seret xlsx "Product data" TikTok</div>
+          <div class="sub-txt">Format: export Analitik GMV Max Produk</div>
+        </div>
+        <div class="chips" id="ads-tiktok-chips" style="margin-top:14px;"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="stitch tight"></div>
+
+  <!-- ============ DASHBOARD ROAS ============ -->
+  <section id="ads-dashboard-section">
+    <div class="section-head">
+      <div><h2><span class="num">12</span> Dashboard ROAS per Produk</h2><p>ROAS Platform = klaim platform. ROAS Asli = dihitung dari Revenue penjualan yang sudah Close di sistem kamu (bukan klaim iklan).</p></div>
+      <select class="month-select" id="ads-dash-month-select"></select>
+    </div>
+    <div class="kpi-grid" style="margin-bottom:22px;">
+      <div class="kpi">
+        <div class="label">Total Biaya Iklan</div>
+        <div class="value" id="ads-kpi-biaya">Rp 0</div>
+        <div class="foot" id="ads-kpi-biaya-foot">—</div>
+      </div>
+      <div class="kpi">
+        <div class="label">ROAS Platform (Rata-rata)</div>
+        <div class="value gold" id="ads-kpi-roas-platform">0.0x</div>
+        <div class="foot">Omzet Iklan / Biaya Iklan</div>
+      </div>
+      <div class="kpi">
+        <div class="label">ROAS Asli (Rata-rata)</div>
+        <div class="value gold" id="ads-kpi-roas-asli">0.0x</div>
+        <div class="foot">Revenue Close / Biaya Iklan</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Iklan Tanpa Atribusi Produk</div>
+        <div class="value" id="ads-kpi-unattributed" style="color:var(--text-muted);">Rp 0</div>
+        <div class="foot">Dari campaign otomatis/broad (Kode Produk kosong)</div>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="full" id="ads-table">
+        <thead>
+          <tr>
+            <th data-key="produk" style="text-align:left;">Nama Produk</th>
+            <th data-key="platform">Platform</th>
+            <th data-key="hpp">HPP</th>
+            <th data-key="qtySales">Qty Terjual</th>
+            <th data-key="revSales">Revenue (Close)</th>
+            <th data-key="biaya">Biaya Iklan</th>
+            <th data-key="omzetIklan">Omzet Iklan</th>
+            <th data-key="roasPlatform">ROAS Platform</th>
+            <th data-key="roasAsli">ROAS Asli</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  </div>
+  <!-- /page ads -->
+
 </main>
 
 </div>
@@ -1124,6 +1282,12 @@ function jsonOutput(obj) {
   const LEDGER_STORAGE_KEY = "hypospot_ledger_v1";
   const PLATFORM_LABEL = {SHOPEE:"Shopee", TIKTOK:"TikTok Shop", TOKOPEDIA:"Tokopedia"};
 
+  // ---- iklan (ads spend per produk per platform per bulan) ----
+  let adSpendRaw = [];  // [{platform, bulan, produk (nama asli/raw), biaya, omzetIklan, qtyIklan}]
+  let dirtyAdsKeys = new Set(); // `${platform}|||${bulan}` yang belum ditulis ke sheet
+  const ADS_STORAGE_KEY = "hypospot_ads_v1";
+  const ADS_UNATTRIBUTED_LABEL = "⚠️ Iklan Tanpa Atribusi Produk (Otomatis/Broad)";
+
   // ---- sumber HPP (Master Modal, live dari Google Sheet lain) ----
   let hppMap = {};       // SKU -> modal (angka)
   let hppByName = {};    // nama produk (lowercase) -> modal (fallback kalau SKU tak ketemu)
@@ -1131,6 +1295,7 @@ function jsonOutput(obj) {
   const HPP_URL_KEY = "hypospot_hpp_url";
   const HPP_CACHE_KEY = "hypospot_hpp_cache";
   let labaSortState = {key:"total_laba", dir:"desc"};
+  let adsSortState = {key:"biaya", dir:"desc"};
 
   /* ================= TOAST ================= */
   function showToast(msg, isErr){
@@ -1201,8 +1366,14 @@ function jsonOutput(obj) {
         skuMap = {};
         (res.skuMap || []).forEach(m => { skuMap[m.kode] = m.nama; });
 
+        const serverAds = res.ads || [];
+        const keptDirtyAds = adSpendRaw.filter(r => dirtyAdsKeys.has(r.platform+"|||"+r.bulan));
+        const serverAdsFiltered = serverAds.map(a => ({platform:a.platform, bulan:a.bulan, produk:a.produk, biaya:a.biaya, omzetIklan:a.omzetIklan, qtyIklan:a.qtyIklan})).filter(r => !dirtyAdsKeys.has(r.platform+"|||"+r.bulan));
+        adSpendRaw = serverAdsFiltered.concat(keptDirtyAds);
+
         saveLocalCache();
         saveLedgerCache();
+        saveAdsCache();
         setSyncStatus("connected", monthsPresent().length);
         renderAll();
       }else{
@@ -1361,6 +1532,15 @@ function jsonOutput(obj) {
         skuMap = parsed.skuMap || {};
       }
     }catch(e){ ordersRaw=[]; incomeRaw=[]; mapping={}; skuMap={}; }
+  }
+  function saveAdsCache(){
+    try{ localStorage.setItem(ADS_STORAGE_KEY, JSON.stringify({adSpendRaw})); }catch(e){}
+  }
+  function loadAdsCache(){
+    try{
+      const raw = localStorage.getItem(ADS_STORAGE_KEY);
+      if(raw){ adSpendRaw = (JSON.parse(raw)||{}).adSpendRaw || []; }
+    }catch(e){ adSpendRaw = []; }
   }
 
   /* ================= LEDGER: matching pesanan + income + mapping ================= */
@@ -1893,6 +2073,134 @@ function jsonOutput(obj) {
       })).filter(r=>r.noPesanan);
     }
     return null;
+  }
+
+  /* ================= IKLAN: parsing file mentah Shopee (CSV) & TikTok (xlsx) ================= */
+  function stripAdNameSuffix(name){
+    return (name||"").toString().replace(/\s*\[\d+\]\s*$/,'').trim();
+  }
+  function parseShopeeAdsCsv(text){
+    const parsed = Papa.parse(text, {skipEmptyLines:false});
+    const rawRows = parsed.data;
+    // cari baris "Periode" buat deteksi bulan
+    let bulan = null;
+    for(let i=0;i<Math.min(rawRows.length,10);i++){
+      const row = rawRows[i]||[];
+      if((row[0]||"").toString().trim().toLowerCase()==="periode"){
+        const periodeStr = (row[1]||"").toString();
+        const startDate = periodeStr.split("-")[0].trim();
+        bulan = excelDateToMonth(startDate);
+        break;
+      }
+    }
+    const headerIdx = findHeaderRowIndex(rawRows, ["Nama Iklan","Kode Produk","Biaya","Omzet Penjualan"]);
+    if(headerIdx<0) return {bulan, rows:[], unattributedBiaya:0};
+    const objs = rowsToObjects(rawRows, headerIdx).filter(Boolean);
+    const grouped = {};
+    let unattributedBiaya = 0;
+    objs.forEach(o=>{
+      const kodeProduk = (o["Kode Produk"]||"").toString().trim();
+      const biaya = parseIndoMoney(o["Biaya"]) || 0;
+      const omzetIklan = parseIndoMoney(o["Omzet Penjualan"]) || 0;
+      const qtyIklan = parseIndoNumber(o["Produk Terjual"]) || 0;
+      let produk;
+      if(!kodeProduk || kodeProduk === "-"){
+        unattributedBiaya += biaya;
+        produk = ADS_UNATTRIBUTED_LABEL;
+      }else{
+        produk = stripAdNameSuffix(o["Nama Iklan"]);
+      }
+      if(!produk) return;
+      if(!grouped[produk]) grouped[produk] = {produk, biaya:0, omzetIklan:0, qtyIklan:0};
+      grouped[produk].biaya += biaya;
+      grouped[produk].omzetIklan += omzetIklan;
+      grouped[produk].qtyIklan += qtyIklan;
+    });
+    return {bulan, rows:Object.values(grouped), unattributedBiaya};
+  }
+  function parseTiktokAdsWorkbook(wb, filename){
+    let bulan = null;
+    const m = (filename||"").match(/(\d{4}-\d{2}-\d{2})_-_(\d{4}-\d{2}-\d{2})/);
+    if(m) bulan = excelDateToMonth(m[1]);
+    const sheetName = wb.SheetNames[0];
+    const rows = safeSheetRows(wb, sheetName);
+    const headerIdx = findHeaderRowIndex(rows, ["Nama produk","Biaya"]);
+    if(headerIdx<0) return {bulan, rows:[]};
+    const objs = rowsToObjects(rows, headerIdx).filter(Boolean);
+    const grouped = {};
+    objs.forEach(o=>{
+      const produk = (o["Nama produk"]||"").toString().trim();
+      if(!produk) return;
+      const biaya = parseIndoMoney(o["Biaya"]) || 0;
+      const omzetIklan = parseIndoMoney(o["Pendapatan kotor"]) || 0;
+      const qtyIklan = parseIndoNumber(o["Pesanan SKU"]) || 0;
+      if(!grouped[produk]) grouped[produk] = {produk, biaya:0, omzetIklan:0, qtyIklan:0};
+      grouped[produk].biaya += biaya;
+      grouped[produk].omzetIklan += omzetIklan;
+      grouped[produk].qtyIklan += qtyIklan;
+    });
+    return {bulan, rows:Object.values(grouped)};
+  }
+  function stageAds(platform, bulan, rows){
+    const key = platform+"|||"+bulan;
+    adSpendRaw = adSpendRaw.filter(r => (r.platform+"|||"+r.bulan) !== key);
+    rows.forEach(r => adSpendRaw.push({platform, bulan, produk:r.produk, biaya:r.biaya, omzetIklan:r.omzetIklan, qtyIklan:r.qtyIklan}));
+    dirtyAdsKeys.add(key);
+    saveAdsCache();
+    renderAll();
+  }
+  async function handleAdsFile(file, platform){
+    if(!file) return;
+    const name = file.name.toLowerCase();
+    try{
+      if(platform === "SHOPEE"){
+        if(!name.endsWith(".csv")){ showToast("File iklan Shopee harus format .csv ya", true); return; }
+        const text = await file.text();
+        const {bulan, rows, unattributedBiaya} = parseShopeeAdsCsv(text);
+        const finalBulan = bulan || document.getElementById("ads-shopee-month-select").value;
+        if(!rows.length){ showToast("Nggak ada baris iklan valid kebaca dari file ini.", true); return; }
+        if(bulan) document.getElementById("ads-shopee-month-select").value = bulan;
+        stageAds("SHOPEE", finalBulan, rows);
+        const info = unattributedBiaya>0 ? ` (termasuk ${fmtIDR(unattributedBiaya)} tanpa atribusi produk)` : "";
+        showToast(`Shopee: ${rows.length} produk iklan bulan ${finalBulan} kebaca${info} ✓ Klik "Simpan Iklan ke Spreadsheet" kalau sudah yakin.`);
+      }else if(platform === "TIKTOK"){
+        if(!name.endsWith(".xlsx")){ showToast("File iklan TikTok harus format .xlsx ya", true); return; }
+        const wb = await readWorkbookRobust(file);
+        const {bulan, rows} = parseTiktokAdsWorkbook(wb, file.name);
+        const finalBulan = bulan || document.getElementById("ads-tiktok-month-select").value;
+        if(!rows.length){ showToast("Nggak ada baris iklan valid kebaca dari file ini.", true); return; }
+        if(bulan) document.getElementById("ads-tiktok-month-select").value = bulan;
+        stageAds("TIKTOK", finalBulan, rows);
+        showToast(`TikTok: ${rows.length} produk iklan bulan ${finalBulan} kebaca ✓ Klik "Simpan Iklan ke Spreadsheet" kalau sudah yakin.`);
+      }
+    }catch(err){
+      showToast(`Gagal baca file iklan ${PLATFORM_LABEL[platform]}: ${err.message}`, true);
+    }
+  }
+  async function saveDirtyAds(){
+    if(!SHEET_URL){ showToast("Sambungkan Google Sheet dulu di bagian atas ya.", true); return; }
+    const keys = Array.from(dirtyAdsKeys);
+    if(!keys.length) return;
+    const btn = document.getElementById("btn-save-ads");
+    btn.disabled = true; btn.textContent = "Menyimpan…";
+    for(const key of keys){
+      const [platform, bulan] = key.split("|||");
+      const rows = adSpendRaw.filter(r => r.platform===platform && r.bulan===bulan);
+      try{
+        const res = await apiPost("saveAds", {platform, month:bulan, rows});
+        if(res && res.ok){
+          dirtyAdsKeys.delete(key);
+          showToast(`Iklan ${PLATFORM_LABEL[platform]} ${bulan} tersimpan ✓ (${res.saved} produk)`);
+        }else{
+          showToast(`Gagal simpan iklan ${platform} ${bulan}: ${res && res.error}`, true);
+        }
+      }catch(err){
+        showToast(`Gagal konek ke spreadsheet: ${err.message}`, true);
+      }
+    }
+    btn.disabled = false;
+    saveAdsCache();
+    renderAll();
   }
 
   async function handleOrdersFile(file){
@@ -2597,6 +2905,130 @@ function jsonOutput(obj) {
     }).join("");
   }
 
+  /* ================= DASHBOARD ROAS PER PRODUK (Iklan) ================= */
+  function canonicalAdProductName(platform, rawProduk){
+    if(rawProduk === ADS_UNATTRIBUTED_LABEL) return rawProduk;
+    return mapping[platform+"|||"+rawProduk] || rawProduk;
+  }
+  // Sales real (SUDAH CLOSE saja) per platform+bulan+produk — dipisah per platform
+  // supaya ROAS iklan Shopee dibandingkan ke penjualan Shopee, bukan tercampur TikTok.
+  function computeSalesByPlatformProduct(){
+    const incomeMap = {};
+    incomeRaw.forEach(r => {
+      const key = r.platform+"|||"+r.noPesanan;
+      incomeMap[key] = (incomeMap[key]||0) + (r.totalPenghasilan||0);
+    });
+    const orderGross = {};
+    ordersRaw.forEach(r => {
+      const key = r.platform+"|||"+r.noPesanan;
+      orderGross[key] = (orderGross[key]||0) + (r.subtotalKotor||0);
+    });
+    const result = {};
+    ordersRaw.forEach(r => {
+      const orderKey = r.platform+"|||"+r.noPesanan;
+      const net = incomeMap[orderKey];
+      const gross = orderGross[orderKey] || 0;
+      if(net === undefined || gross <= 0) return; // cuma yang sudah Close
+      const produkFinal = canonicalName(r.platform, r.produk, r.sku, r.variasi);
+      const alloc = net * ((r.subtotalKotor||0) / gross);
+      if(!result[r.platform]) result[r.platform] = {};
+      if(!result[r.platform][r.bulan]) result[r.platform][r.bulan] = {};
+      if(!result[r.platform][r.bulan][produkFinal]) result[r.platform][r.bulan][produkFinal] = {qty:0, revenue:0};
+      result[r.platform][r.bulan][produkFinal].qty += (r.qty||0);
+      result[r.platform][r.bulan][produkFinal].revenue += alloc;
+    });
+    return result;
+  }
+  function updateAdsHeaderArrows(){
+    document.querySelectorAll("#ads-table thead th[data-key]").forEach(th => {
+      const key = th.dataset.key;
+      if(!th.dataset.label) th.dataset.label = th.textContent.trim();
+      th.textContent = th.dataset.label + (adsSortState.key===key ? (adsSortState.dir==="desc" ? " ▼" : " ▲") : "");
+    });
+  }
+  function renderAdsDashboard(){
+    const bulanSet = new Set(adSpendRaw.map(r=>r.bulan));
+    const bulanList = MONTH_ORDER.filter(m => bulanSet.has(m));
+    const sel = document.getElementById("ads-dash-month-select");
+    const prevVal = sel.value;
+    sel.innerHTML = `<option value="__ALL__">Semua Bulan (Total)</option>` + bulanList.map(m => `<option value="${m}">${m}</option>`).join("");
+    if(prevVal && (prevVal==="__ALL__" || bulanList.includes(prevVal))) sel.value = prevVal;
+    else sel.value = bulanList.length ? bulanList[bulanList.length-1] : "__ALL__";
+    const scope = sel.value;
+
+    const salesData = computeSalesByPlatformProduct();
+    const hppInv = invertSkuMap();
+    const scopedAds = adSpendRaw.filter(r => scope==="__ALL__" || r.bulan===scope);
+
+    const grouped = {};
+    scopedAds.forEach(r => {
+      const produkFinal = canonicalAdProductName(r.platform, r.produk);
+      const key = r.platform+"|||"+produkFinal;
+      if(!grouped[key]) grouped[key] = {platform:r.platform, produk:produkFinal, biaya:0, omzetIklan:0, qtyIklan:0};
+      grouped[key].biaya += r.biaya;
+      grouped[key].omzetIklan += r.omzetIklan;
+      grouped[key].qtyIklan += r.qtyIklan;
+    });
+
+    const bulanScopeList = scope==="__ALL__" ? bulanList : [scope];
+    let rows = Object.values(grouped).map(g => {
+      let qtySales = 0, revSales = 0;
+      bulanScopeList.forEach(m => {
+        const s = salesData[g.platform] && salesData[g.platform][m] && salesData[g.platform][m][g.produk];
+        if(s){ qtySales += s.qty; revSales += s.revenue; }
+      });
+      const hpp = g.produk===ADS_UNATTRIBUTED_LABEL ? null : getHppForProduct(g.produk, hppInv);
+      const roasPlatform = g.biaya>0 ? g.omzetIklan/g.biaya : null;
+      const roasAsli = g.biaya>0 ? revSales/g.biaya : null;
+      return {...g, qtySales, revSales, hpp, roasPlatform, roasAsli};
+    });
+
+    rows.sort((a,b) => {
+      let va = a[adsSortState.key], vb = b[adsSortState.key];
+      if(va===null || va===undefined) va = adsSortState.dir==="desc" ? -Infinity : Infinity;
+      if(vb===null || vb===undefined) vb = adsSortState.dir==="desc" ? -Infinity : Infinity;
+      if(typeof va === "string") return adsSortState.dir==="asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      return adsSortState.dir==="asc" ? va-vb : vb-va;
+    });
+
+    const attributedRows = rows.filter(r => r.produk !== ADS_UNATTRIBUTED_LABEL);
+    const unattributedBiaya = rows.filter(r => r.produk === ADS_UNATTRIBUTED_LABEL).reduce((a,r)=>a+r.biaya, 0);
+    const totalBiaya = rows.reduce((a,r)=>a+r.biaya, 0);
+    const totalOmzetIklan = attributedRows.reduce((a,r)=>a+r.omzetIklan, 0);
+    const totalRevSales = attributedRows.reduce((a,r)=>a+r.revSales, 0);
+    const totalBiayaAttributed = attributedRows.reduce((a,r)=>a+r.biaya, 0);
+    const roasPlatformAvg = totalBiayaAttributed>0 ? totalOmzetIklan/totalBiayaAttributed : 0;
+    const roasAsliAvg = totalBiayaAttributed>0 ? totalRevSales/totalBiayaAttributed : 0;
+
+    document.getElementById("ads-kpi-biaya").textContent = fmtIDR(totalBiaya);
+    document.getElementById("ads-kpi-biaya-foot").textContent = scope==="__ALL__" ? "Semua bulan" : `Bulan ${scope}`;
+    document.getElementById("ads-kpi-roas-platform").textContent = roasPlatformAvg.toFixed(1)+"x";
+    document.getElementById("ads-kpi-roas-asli").textContent = roasAsliAvg.toFixed(1)+"x";
+    document.getElementById("ads-kpi-unattributed").textContent = fmtIDR(unattributedBiaya);
+
+    updateAdsHeaderArrows();
+
+    const tbody = document.querySelector("#ads-table tbody");
+    if(!rows.length){
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--text-dim); padding:24px;">Belum ada data iklan buat bulan ini.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const isUnattr = r.produk === ADS_UNATTRIBUTED_LABEL;
+      const missingHpp = !isUnattr && r.hpp===null;
+      return `<tr class="${isUnattr?'laba-missing-row':''}">
+        <td style="${isUnattr?'color:var(--text-dim); font-style:italic;':''}">${r.produk}</td>
+        <td><span class="platform-chip ${r.platform.toLowerCase()}">${PLATFORM_LABEL[r.platform]}</span></td>
+        <td class="${missingHpp||isUnattr?'laba-missing':''}">${isUnattr?'—':missingHpp?'— belum ada HPP':fmtIDR(r.hpp)}</td>
+        <td>${isUnattr?'—':fmtNum(r.qtySales)}</td>
+        <td>${isUnattr?'—':fmtIDR(r.revSales)}</td>
+        <td>${fmtIDR(r.biaya)}</td>
+        <td>${isUnattr?'—':fmtIDR(r.omzetIklan)}</td>
+        <td>${r.roasPlatform!==null ? r.roasPlatform.toFixed(2)+'x' : '—'}</td>
+        <td class="total">${r.roasAsli!==null ? r.roasAsli.toFixed(2)+'x' : '—'}</td>
+      </tr>`;
+    }).join("");
+  }
   /* ================= MASTER RENDER ================= */
   function renderOrdersChips(){
     const wrap = document.getElementById("orders-chips");
@@ -2671,6 +3103,46 @@ function jsonOutput(obj) {
     if(dirtyIncomePlatforms.size) saveBtn.textContent = `Simpan Income ke Spreadsheet (${dirtyIncomePlatforms.size})`;
   }
 
+  function renderAdsChipsFor(platform, wrapId){
+    const wrap = document.getElementById(wrapId);
+    const byBulan = {};
+    adSpendRaw.filter(r => r.platform===platform).forEach(r => {
+      if(!byBulan[r.bulan]) byBulan[r.bulan] = {count:0, biaya:0};
+      byBulan[r.bulan].count++;
+      byBulan[r.bulan].biaya += r.biaya;
+    });
+    const entries = Object.entries(byBulan);
+    if(!entries.length){ wrap.innerHTML = `<span style="color:var(--text-dim); font-size:12.5px;">Belum ada data iklan diupload.</span>`; return; }
+    wrap.innerHTML = entries.map(([bulan, v]) => {
+      const key = platform+"|||"+bulan;
+      const dirty = dirtyAdsKeys.has(key);
+      return `<div class="chip">
+        <span class="dot" style="background:${dirty ? 'var(--gold)' : 'var(--green)'}"></span>
+        ${bulan} <span style="color:var(--text-dim); font-weight:400;">(${v.count} produk · ${fmtIDR(v.biaya)}${dirty?' · belum disimpan':''})</span>
+        <button data-key="${key}" title="Hapus data ini">✕</button>
+      </div>`;
+    }).join("");
+    wrap.querySelectorAll("button[data-key]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const [platform, bulan] = btn.dataset.key.split("|||");
+        adSpendRaw = adSpendRaw.filter(r => !(r.platform===platform && r.bulan===bulan));
+        dirtyAdsKeys.delete(btn.dataset.key);
+        saveAdsCache(); renderAll();
+        if(SHEET_URL){
+          try{ await apiPost("deleteAds", {platform, month:bulan}); showToast(`Iklan ${PLATFORM_LABEL[platform]} ${bulan} dihapus dari spreadsheet`); }
+          catch(err){ showToast(`Gagal hapus di spreadsheet: ${err.message}`, true); }
+        }
+      });
+    });
+  }
+  function renderAdsChips(){
+    renderAdsChipsFor("SHOPEE", "ads-shopee-chips");
+    renderAdsChipsFor("TIKTOK", "ads-tiktok-chips");
+    const saveBtn = document.getElementById("btn-save-ads");
+    saveBtn.style.display = dirtyAdsKeys.size ? "inline-block" : "none";
+    if(dirtyAdsKeys.size) saveBtn.textContent = `Simpan Iklan ke Spreadsheet (${dirtyAdsKeys.size})`;
+  }
+
   /* ================= LEDGER: upload Master SKU Mapping ================= */
   function parseSkuMapCsv(file){
     return new Promise((resolve) => {
@@ -2741,6 +3213,16 @@ function jsonOutput(obj) {
         unmapped.push({platform:r.platform, sku:r.sku||"", original:r.produk, variasi:r.variasi||"", identityKey});
       }
     });
+    adSpendRaw.forEach(r => {
+      if(r.produk === ADS_UNATTRIBUTED_LABEL) return; // ini memang sengaja nggak per-produk
+      const identityKey = r.produk;
+      const key = r.platform+"|||"+identityKey;
+      if(seen.has(key)) return;
+      seen.add(key);
+      if(!mapping[key]){
+        unmapped.push({platform:r.platform, sku:"", original:r.produk, variasi:"", identityKey, fromAds:true});
+      }
+    });
 
     const skuStatus = document.getElementById("skumap-status");
     const skuCount = Object.keys(skuMap).length;
@@ -2758,7 +3240,7 @@ function jsonOutput(obj) {
         return `
         <tr>
           <td><span class="platform-chip ${u.platform.toLowerCase()}">${PLATFORM_LABEL[u.platform]}</span>${u.sku ? `<div style="color:var(--text-dim); font-family:var(--font-mono); font-size:10.5px; margin-top:4px;">SKU: ${u.sku}</div>` : ''}</td>
-          <td>${u.original}${u.variasi ? `<div style="color:var(--text-dim); font-size:11.5px; margin-top:3px;">Variasi: ${u.variasi}</div>` : ''}</td>
+          <td>${u.original}${u.variasi ? `<div style="color:var(--text-dim); font-size:11.5px; margin-top:3px;">Variasi: ${u.variasi}</div>` : ''}${u.fromAds ? `<div style="color:var(--gold); font-size:10.5px; margin-top:3px;">📢 dari data Iklan</div>` : ''}</td>
           <td><input type="text" data-idx="${i}" placeholder="Nama master…" value="${suggested}"></td>
           <td><button class="btn-small save" data-idx="${i}">Simpan</button></td>
         </tr>`;
@@ -2808,7 +3290,9 @@ function jsonOutput(obj) {
       ["renderChips", renderChips],
       ["renderOrdersChips", renderOrdersChips],
       ["renderIncomeChips", renderIncomeChips],
-      ["renderMappingTables", renderMappingTables]
+      ["renderAdsChips", renderAdsChips],
+      ["renderMappingTables", renderMappingTables],
+      ["renderAdsDashboard", renderAdsDashboard]
     ];
     for(const [name, fn] of steps){
       try{ fn(); }
@@ -2876,6 +3360,35 @@ function jsonOutput(obj) {
   dropzoneIncome.addEventListener("drop", (e)=>{ if(e.dataTransfer.files[0]) handleIncomeFile(e.dataTransfer.files[0]); });
   document.getElementById("btn-save-income").addEventListener("click", saveDirtyIncome);
 
+  // ---- dropzone Iklan Shopee ----
+  const dropzoneAdsShopee = document.getElementById("dropzone-ads-shopee");
+  const fileInputAdsShopee = document.getElementById("file-input-ads-shopee");
+  dropzoneAdsShopee.addEventListener("click", ()=> fileInputAdsShopee.click());
+  fileInputAdsShopee.addEventListener("change", (e)=> { if(e.target.files[0]) handleAdsFile(e.target.files[0], "SHOPEE"); e.target.value=""; });
+  ["dragenter","dragover"].forEach(evt => dropzoneAdsShopee.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneAdsShopee.classList.add("drag"); }));
+  ["dragleave","drop"].forEach(evt => dropzoneAdsShopee.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneAdsShopee.classList.remove("drag"); }));
+  dropzoneAdsShopee.addEventListener("drop", (e)=>{ if(e.dataTransfer.files[0]) handleAdsFile(e.dataTransfer.files[0], "SHOPEE"); });
+
+  // ---- dropzone Iklan TikTok ----
+  const dropzoneAdsTiktok = document.getElementById("dropzone-ads-tiktok");
+  const fileInputAdsTiktok = document.getElementById("file-input-ads-tiktok");
+  dropzoneAdsTiktok.addEventListener("click", ()=> fileInputAdsTiktok.click());
+  fileInputAdsTiktok.addEventListener("change", (e)=> { if(e.target.files[0]) handleAdsFile(e.target.files[0], "TIKTOK"); e.target.value=""; });
+  ["dragenter","dragover"].forEach(evt => dropzoneAdsTiktok.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneAdsTiktok.classList.add("drag"); }));
+  ["dragleave","drop"].forEach(evt => dropzoneAdsTiktok.addEventListener(evt, (e)=>{ e.preventDefault(); dropzoneAdsTiktok.classList.remove("drag"); }));
+  dropzoneAdsTiktok.addEventListener("drop", (e)=>{ if(e.dataTransfer.files[0]) handleAdsFile(e.dataTransfer.files[0], "TIKTOK"); });
+
+  document.getElementById("btn-save-ads").addEventListener("click", saveDirtyAds);
+  document.getElementById("ads-dash-month-select").addEventListener("change", renderAdsDashboard);
+  document.querySelectorAll("#ads-table thead th[data-key]").forEach(th => {
+    th.addEventListener("click", ()=>{
+      const key = th.dataset.key;
+      if(adsSortState.key === key) adsSortState.dir = adsSortState.dir==="desc" ? "asc" : "desc";
+      else { adsSortState.key = key; adsSortState.dir = "desc"; }
+      renderAdsDashboard();
+    });
+  });
+
   // ---- dropzone Master SKU Mapping ----
   const dropzoneSkuMap = document.getElementById("dropzone-skumap");
   const fileInputSkuMap = document.getElementById("file-input-skumap");
@@ -2892,7 +3405,8 @@ function jsonOutput(obj) {
     if(!confirm(msg)) return;
     monthsData = {}; pendingFiles=[]; selectedProduct=null; dirtyMonths.clear();
     ordersRaw=[]; incomeRaw=[]; mapping={}; skuMap={}; dirtyOrderKeys.clear(); dirtyIncomePlatforms.clear();
-    saveLocalCache(); saveLedgerCache(); renderPending(); renderAll();
+    adSpendRaw=[]; dirtyAdsKeys.clear();
+    saveLocalCache(); saveLedgerCache(); saveAdsCache(); renderPending(); renderAll();
     if(SHEET_URL){
       try{
         const res = await apiPost("resetAll", {});
@@ -3001,8 +3515,11 @@ function jsonOutput(obj) {
 
   /* ================= INIT ================= */
   document.getElementById("orders-month-select").innerHTML = MONTH_ORDER.map(m => `<option value="${m}">${m}</option>`).join("");
+  document.getElementById("ads-shopee-month-select").innerHTML = MONTH_ORDER.map(m => `<option value="${m}">${m}</option>`).join("");
+  document.getElementById("ads-tiktok-month-select").innerHTML = MONTH_ORDER.map(m => `<option value="${m}">${m}</option>`).join("");
   loadLocalCache();
   loadLedgerCache();
+  loadAdsCache();
   loadSheetConfig();
   loadHppConfig();
   loadHppCache();
